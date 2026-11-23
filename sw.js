@@ -1,5 +1,5 @@
 // Garde l'app utilisable hors connexion (réseau d'abord, copie locale si pas de réseau)
-var CACHE = 'ma-journee-v2';
+var CACHE = 'ma-journee-v3';
 var SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon.svg'];
 
 self.addEventListener('install', function (e) {

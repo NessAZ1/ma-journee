@@ -144,6 +144,16 @@
         <button type="button" class="btn" id="fPlaceBtn">Chercher</button>
       </div>
       <label class="check"><input type="checkbox" id="fOnline"> En ligne / visio (pas de trajet)</label>
+      <div class="grid2">
+        <div>
+          <label for="fPhone">Téléphone du contact</label>
+          <input id="fPhone" type="tel" inputmode="tel" placeholder="Pour prévenir en un tap">
+        </div>
+        <div>
+          <label for="fEmail">E-mail du contact</label>
+          <input id="fEmail" type="email" inputmode="email" placeholder="Facultatif">
+        </div>
+      </div>
       <div id="fPlaceResults" class="results"></div>
       <div id="fPicked" class="picked" hidden>
         <p id="fPickedText"></p>
@@ -231,6 +241,8 @@
       </div>
       <label for="sBuffer">Marge entre deux étapes (min)</label>
       <input id="sBuffer" type="number" min="0" step="5">
+      <label for="sName">Votre prénom (pour signer vos messages)</label>
+      <input id="sName" autocomplete="given-name" placeholder="Facultatif">
     </div>
 
     <div class="box">
@@ -296,7 +308,22 @@
   </nav>
 </div>
 
-<div id="toast" class="toast" role="status" hidden></div>
+<div id="toast" class="toast" role="status" hidden><span id="toastText"></span><button type="button" id="toastUndo" hidden>Annuler</button></div>
+
+<dialog id="sheet" class="sheet" aria-labelledby="sheetTitle">
+  <div class="sheet-inner">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <header class="sheet-head">
+      <div>
+        <p class="eyebrow" id="sheetWhen"></p>
+        <h2 id="sheetTitle"></h2>
+      </div>
+      <button type="button" class="icon-btn" id="sheetClose" aria-label="Fermer">×</button>
+    </header>
+    <div class="seg-toggle wide" role="tablist" aria-label="Actions" id="sheetTabs"></div>
+    <div id="sheetBody" class="stack"></div>
+  </div>
+</dialog>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="app.js"></script>
