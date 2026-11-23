@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2347C6">
+<meta name="description" content="Votre GPS du quotidien : rendez-vous, tâches et trajets organisés automatiquement.">
+<title>Ma Journée</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- JOURNÉE / SEMAINE -->
+  <section id="view-day" class="view active" aria-label="Ma journée">
+    <header class="top">
+      <div class="toprow">
+        <p class="eyebrow">Ma journée</p>
+        <div class="seg-toggle" role="tablist" aria-label="Affichage">
+          <button role="tab" id="modeDay" aria-selected="true">Jour</button>
+          <button role="tab" id="modeWeek" aria-selected="false">Semaine</button>
+        </div>
+      </div>
+      <div class="daynav">
+        <button class="icon-btn" id="prevDay" aria-label="Précédent">‹</button>
+        <h1 id="dayTitle">Aujourd'hui</h1>
+        <button class="icon-btn" id="nextDay" aria-label="Suivant">›</button>
+      </div>
+      <button class="link-btn" id="todayBtn">Revenir à aujourd'hui</button>
+    </header>
+
+    <div id="dayPane" class="pane">
+      <form id="quickForm" class="quick" autocomplete="off">
+        <label for="quickInput">Ajout rapide</label>
+        <textarea id="quickInput" rows="2" placeholder="Ex. dentiste à 9h, pharmacie, colis avant 12h, appeler maman 10 min"></textarea>
+        <div class="quickrow">
+          <p class="hint">Séparez par des virgules. L'app comprend les heures, « avant 12h », les durées et « urgent ».</p>
+          <button type="submit" class="btn primary">Organiser</button>
+        </div>
+        <div class="presetblock">
+          <p class="presetlabel" id="dayPresetsLabel">Ou en un tap</p>
+          <div id="dayPresets" class="chips scroll" role="group" aria-labelledby="dayPresetsLabel"></div>
+        </div>
+      </form>
+
+      <div id="homeWarning" class="notice warn" hidden>
+        Indiquez votre point de départ dans <button class="link-btn inline" data-goto="settings">Réglages</button> pour calculer les trajets et trouver les lieux près de chez vous.
+      </div>
+      <div id="nextUp" class="nextup" hidden></div>
+
+      <div class="stats" id="stats"></div>
+      <div id="timeline" class="timeline"></div>
+
+      <div id="leftoverBox" class="box" hidden>
+        <h2>Ne rentre pas dans la journée</h2>
+        <div id="leftover" class="stack"></div>
+      </div>
+      <div id="doneBox" class="box" hidden>
+        <h2>Déjà fait</h2>
+        <div id="doneList" class="stack"></div>
+      </div>
+
+      <div class="daytools">
+        <a id="fullRoute" class="btn primary block" target="_blank" rel="noopener" hidden>Tout l'itinéraire dans Google Maps</a>
+        <div class="grid2">
+          <button type="button" class="btn" id="shareBtn">Partager ma journée</button>
+          <button type="button" class="btn" id="exportBtn">Exporter vers mon agenda</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="weekPane" class="pane" hidden>
+      <div id="week" class="week"></div>
+    </div>
+  </section>
+
+  <!-- AJOUTER / MODIFIER -->
+  <section id="view-add" class="view" aria-label="Ajouter">
+    <header class="top">
+      <p class="eyebrow" id="formEyebrow">Nouveau</p>
+      <h1 id="formTitle">Ajouter à mon planning</h1>
+    </header>
+    <form id="itemForm" class="form" autocomplete="off">
+      <p class="presetlabel" id="formPresetsLabel">Choisir un modèle</p>
+      <div id="formPresets" class="chips" role="group" aria-labelledby="formPresetsLabel"></div>
+      <label for="fTitle">Quoi ?</label>
+      <input id="fTitle" required placeholder="Ex. Dentiste à 9h, récupérer un colis…">
+      <p class="hint" id="titleHint"></p>
+
+      <fieldset class="seg">
+        <legend>Type</legend>
+        <label><input type="radio" name="fKind" value="fixed" checked> Rendez-vous à heure fixe</label>
+        <label><input type="radio" name="fKind" value="flex"> Tâche flexible (l'app choisit l'heure)</label>
+      </fieldset>
+
+      <div class="grid2">
+        <div>
+          <label for="fDate">Jour</label>
+          <input id="fDate" type="date" required>
+        </div>
+        <div id="startWrap">
+          <label for="fStart">Heure</label>
+          <input id="fStart" type="time">
+        </div>
+        <div id="deadlineWrap" hidden>
+          <label for="fDeadline">À faire avant</label>
+          <input id="fDeadline" type="time">
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div>
+          <label for="fDuration">Durée (min)</label>
+          <input id="fDuration" type="number" min="5" step="5" value="30" required>
+        </div>
+        <div>
+          <label for="fPriority">Importance</label>
+          <select id="fPriority">
+            <option value="normale">Normale</option>
+            <option value="haute">Urgente</option>
+          </select>
+        </div>
+      </div>
+
+      <label for="fRepeat">Répéter</label>
+      <select id="fRepeat">
+        <option value="none">Une seule fois</option>
+        <option value="daily">Tous les jours</option>
+        <option value="weekdays">Du lundi au vendredi</option>
+        <option value="weekly">Chaque semaine</option>
+      </select>
+
+      <label for="fPlace">Où ?</label>
+      <div id="favChips" class="chips"></div>
+      <div id="presetHint" class="notice" hidden></div>
+      <div class="searchrow">
+        <input id="fPlace" placeholder="Nom du lieu ou adresse (ex. pharmacie, gare de Lyon)">
+        <button type="button" class="btn" id="fPlaceBtn">Chercher</button>
+      </div>
+      <label class="check"><input type="checkbox" id="fOnline"> En ligne / visio (pas de trajet)</label>
+      <div id="fPlaceResults" class="results"></div>
+      <div id="fPicked" class="picked" hidden>
+        <p id="fPickedText"></p>
+        <div class="favsave">
+          <input id="favName" placeholder="Nom (ex. Travail, Ma pharmacie)" aria-label="Nom du lieu favori">
+          <button type="button" class="btn" id="favSaveBtn">Ajouter aux favoris</button>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn primary block" id="submitBtn">Ajouter</button>
+        <button type="button" class="btn block" id="cancelEdit" hidden>Annuler</button>
+        <button type="button" class="btn danger block" id="deleteBtn" hidden>Supprimer</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- CARTE -->
+  <section id="view-map" class="view" aria-label="Carte">
+    <header class="top">
+      <p class="eyebrow">Itinéraire</p>
+      <h1 id="mapTitle">Carte du jour</h1>
+    </header>
+    <div id="map" class="map" role="img" aria-label="Carte des étapes de la journée"></div>
+    <div id="mapLegend" class="stack"></div>
+    <p class="hint">Temps de trajet estimés. Pour le temps exact et les horaires de transport, ouvrez Google Maps.</p>
+    <a id="fullRoute2" class="btn primary block" target="_blank" rel="noopener" hidden>Ouvrir dans Google Maps</a>
+  </section>
+
+  <!-- RÉGLAGES -->
+  <section id="view-settings" class="view" aria-label="Réglages">
+    <header class="top">
+      <p class="eyebrow">Réglages</p>
+      <h1>Mes lieux, mes habitudes, mes agendas</h1>
+    </header>
+
+    <div class="box">
+      <h2>Point de départ</h2>
+      <p class="hint" id="homeLabel">Aucune adresse enregistrée.</p>
+      <div class="searchrow">
+        <input id="homeInput" placeholder="Votre adresse (domicile)" aria-label="Adresse de départ">
+        <button type="button" class="btn" id="homeBtn">Chercher</button>
+      </div>
+      <div id="homeResults" class="results"></div>
+    </div>
+
+    <div class="box">
+      <h2>Mes lieux favoris</h2>
+      <p class="hint">Travail, école, salle de sport… Enregistrez-les une fois : les modèles et l'ajout rapide les utilisent tout seuls.</p>
+      <div id="favList" class="stack"></div>
+      <div class="grid2">
+        <div>
+          <label for="favPreset">Lieu</label>
+          <select id="favPreset">
+            <option>Travail</option>
+            <option>École</option>
+            <option>Sport</option>
+            <option value="">Autre…</option>
+          </select>
+        </div>
+        <div id="favCustomWrap" hidden>
+          <label for="favCustom">Nom</label>
+          <input id="favCustom" placeholder="Ex. Chez mamie">
+        </div>
+      </div>
+      <div class="searchrow">
+        <input id="favAddr" placeholder="Adresse de ce lieu" aria-label="Adresse du lieu favori">
+        <button type="button" class="btn" id="favAddrBtn">Chercher</button>
+      </div>
+      <div id="favResults" class="results"></div>
+    </div>
+
+    <div class="box">
+      <h2>Mes habitudes</h2>
+      <label for="sMode">Je me déplace surtout…</label>
+      <select id="sMode">
+        <option value="transit">En transports en commun</option>
+        <option value="walking">À pied</option>
+        <option value="bicycling">À vélo</option>
+        <option value="driving">En voiture</option>
+      </select>
+      <div class="grid2">
+        <div><label for="sStart">Début de journée</label><input id="sStart" type="time"></div>
+        <div><label for="sEnd">Fin de journée</label><input id="sEnd" type="time"></div>
+      </div>
+      <label for="sBuffer">Marge entre deux étapes (min)</label>
+      <input id="sBuffer" type="number" min="0" step="5">
+    </div>
+
+    <div class="box">
+      <h2>Rappels</h2>
+      <p class="hint" id="notifState">Recevez « Il est temps de partir » avant chaque rendez-vous, tant que l'app est ouverte.</p>
+      <button type="button" class="btn block" id="notifBtn">Activer les rappels</button>
+    </div>
+
+    <div class="box">
+      <h2>Importer mes agendas</h2>
+      <p class="hint">Teams / Outlook, Google Agenda, Doctolib : importez un fichier .ics. L'app cherche les adresses et place tout dans votre journée.</p>
+      <label class="btn block filebtn" for="icsFile">Choisir un fichier .ics</label>
+      <input type="file" id="icsFile" accept=".ics,text/calendar" class="visually-hidden">
+      <div id="importResult" class="notice" hidden></div>
+      <details>
+        <summary>Où trouver ce fichier ?</summary>
+        <ul class="howto">
+          <li><strong>Teams / Outlook :</strong> Outlook sur le web › Paramètres › Calendrier › Calendriers partagés › Publier un calendrier › lien ICS. Ou ouvrez une réunion › Enregistrer sous (.ics).</li>
+          <li><strong>Google Agenda :</strong> Paramètres › Importer et exporter › Exporter.</li>
+          <li><strong>Doctolib :</strong> dans le rendez-vous ou l'e-mail de confirmation › Ajouter à mon agenda.</li>
+        </ul>
+      </details>
+    </div>
+
+    <div class="box">
+      <h2>Installer l'app</h2>
+      <p class="hint">Sur iPhone : Partager › Sur l'écran d'accueil. Sur Android : menu ⋮ › Installer l'application.</p>
+      <button type="button" class="btn block" id="installBtn" hidden>Installer sur cet appareil</button>
+    </div>
+
+    <div class="box">
+      <h2>Mes données</h2>
+      <p class="hint">Tout est enregistré uniquement sur cet appareil. Rien n'est envoyé à un serveur, sauf les recherches de lieux.</p>
+      <button type="button" class="btn block" id="demoBtn">Charger un exemple</button>
+      <button type="button" class="btn danger block" id="wipeBtn">Effacer toutes mes données</button>
+      <div id="wipeConfirm" class="confirm" hidden>
+        <p>Effacer tous vos rendez-vous, tâches, lieux et réglages de cet appareil ?</p>
+        <div class="grid2">
+          <button type="button" class="btn" id="wipeNo">Garder</button>
+          <button type="button" class="btn dangerfill" id="wipeYes">Tout effacer</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <nav class="tabs" aria-label="Navigation principale">
+    <button data-goto="day" class="tab active" aria-current="page">
+      <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"></rect><path d="M3 10h18M8 3v4M16 3v4"></path></svg>
+      Journée
+    </button>
+    <button data-goto="add" class="tab">
+      <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>
+      Ajouter
+    </button>
+    <button data-goto="map" class="tab">
+      <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2-6-2z"></path><path d="M9 4v14M15 6v14"></path></svg>
+      Carte
+    </button>
+    <button data-goto="settings" class="tab">
+      <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"></path></svg>
+      Réglages
+    </button>
+  </nav>
+</div>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
