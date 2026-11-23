@@ -81,7 +81,15 @@
       <div id="weekQuickSlot"></div>
       <div id="weekAlert" class="overload" role="region" aria-label="Semaine trop chargée" hidden></div>
       <button type="button" class="btn primary block" id="organizeWeek" aria-haspopup="dialog">Organiser ma semaine</button>
-      <div id="week" class="week"></div>
+      <div class="wtoolbar">
+        <div class="seg-toggle" role="tablist" aria-label="Affichage de la semaine">
+          <button role="tab" id="wGridBtn" aria-selected="true">Agenda</button>
+          <button role="tab" id="wListBtn" aria-selected="false">Liste</button>
+        </div>
+        <p class="hint" id="wGridHint">Touchez un jour pour le déplacer en entier. Appui long sur une étape pour la glisser.</p>
+      </div>
+      <div id="weekGrid" class="wgrid"></div>
+      <div id="week" class="week" hidden></div>
     </div>
   </section>
 
@@ -312,6 +320,10 @@
     <button data-goto="day" class="tab active" aria-current="page">
       <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"></rect><path d="M3 10h18M8 3v4M16 3v4"></path></svg>
       Journée
+    </button>
+    <button data-goto="week" class="tab">
+      <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"></rect><path d="M3 10h18M8 3v4M16 3v4M8 10v11M13 10v11M18 10v11"></path></svg>
+      Semaine
     </button>
     <button data-goto="add" class="tab">
       <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>

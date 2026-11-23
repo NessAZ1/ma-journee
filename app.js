@@ -598,12 +598,20 @@
   });
 
   // ================= Navigation =================
-  function go(view) {
-    document.querySelectorAll('.view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + view); });
+  var activeView = 'day';
+  function syncTabs() {
+    var key = activeView === 'day' && viewMode === 'week' ? 'week' : activeView;
     document.querySelectorAll('.tab').forEach(function (t) {
-      var on = t.dataset.goto === view; t.classList.toggle('active', on);
+      var on = t.dataset.goto === key; t.classList.toggle('active', on);
       if (on) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current');
     });
+  }
+  function go(view) {
+    if (view === 'week') { activeView = 'day'; viewMode = 'week'; view = 'day'; setMode('week'); }
+    else if (view === 'day' && activeView === 'day' && viewMode === 'week') { setMode('day'); }
+    activeView = view;
+    document.querySelectorAll('.view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + view); });
+    syncTabs();
     if (view === 'add' && !editingId) resetForm();
     if (view === 'map') renderMap();
     if (view === 'settings') renderSettings();
@@ -618,6 +626,7 @@
     viewMode = m;
     $('#modeDay').setAttribute('aria-selected', m === 'day');
     $('#modeWeek').setAttribute('aria-selected', m === 'week');
+    syncTabs();
     render();
   }
   $('#modeDay').addEventListener('click', function () { setMode('day'); });
@@ -1394,9 +1403,229 @@
   }
 
   // ================= Vue Semaine =================
+  // ================= Grille de la semaine (style agenda) =================
+  var HOUR_PX = 40;
+  function weekDisplay() { return state.settings.weekDisplay || 'grid'; }
+  function setWeekDisplay(m) { state.settings.weekDisplay = m; save(); render(); }
+  $('#wGridBtn').addEventListener('click', function () { setWeekDisplay('grid'); });
+  $('#wListBtn').addEventListener('click', function () { setWeekDisplay('list'); });
+
+  function renderWeekGrid(ws) {
+    var g = $('#weekGrid'); g.innerHTML = '';
+    var s = state.settings;
+    var days = daysBetween(ws, addDays(ws, 6));
+    var plans = days.map(function (d) { return planDay(d); });
+    var m0 = toMin(s.dayStart), m1 = toMin(s.dayEnd);
+    plans.forEach(function (p) { p.out.forEach(function (o) { m0 = Math.min(m0, o.start - (o.travel || 0)); m1 = Math.max(m1, o.end); }); });
+    var h0 = Math.max(0, Math.floor(m0 / 60)), h1 = Math.min(24, Math.ceil(m1 / 60));
+    var height = (h1 - h0) * HOUR_PX;
+    var y = function (m) { return (m - h0 * 60) / 60 * HOUR_PX; };
+
+    var head = el('div', { class: 'wg-head' }, el('span', { class: 'wg-corner', 'aria-hidden': 'true' }));
+    days.forEach(function (d, i) {
+      var p = plans[i], dt = parseDate(d);
+      var avail = Math.max(60, m1 - m0);
+      var lvl = p.leftover.length ? 'full' : ((p.busy + p.missing) / Math.max(60, toMin(s.dayEnd) - toMin(s.dayStart)) > 0.8 ? 'busy' : (p.out.length ? 'ok' : 'free'));
+      head.appendChild(el('button', { type: 'button', class: 'wg-day ' + lvl + (d === today() ? ' today' : '') + (d < today() ? ' past' : ''),
+        'aria-label': cap(frDate(d)) + (p.leftover.length ? ', trop chargée' : '') + ' : options de la journée', onclick: function () { openDayMenu(d); } },
+        el('small', { text: dt.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', '') }),
+        el('strong', { text: String(dt.getDate()) }),
+        p.leftover.length ? el('span', { class: 'wg-over', text: '+' + p.leftover.length }) : el('span', { class: 'wg-dot', 'aria-hidden': 'true' })));
+    });
+    g.appendChild(head);
+
+    var body = el('div', { class: 'wg-body', style: 'height:' + height + 'px' });
+    var times = el('div', { class: 'wg-times', 'aria-hidden': 'true' });
+    for (var h = h0; h < h1; h++) times.appendChild(el('span', { style: 'top:' + y(h * 60) + 'px', text: h + 'h' }));
+    body.appendChild(times);
+    days.forEach(function (d, i) {
+      var col = el('div', { class: 'wg-col' + (d === today() ? ' today' : ''), 'data-date': d, role: 'list', 'aria-label': cap(frDate(d)) });
+      plans[i].out.forEach(function (o) {
+        var it = o.item, fixed = isFixed(it);
+        if (o.travel && !o.past) col.appendChild(el('div', { class: 'wg-travel', 'aria-hidden': 'true', style: 'top:' + y(o.start - o.travel) + 'px;height:' + Math.max(2, o.travel / 60 * HOUR_PX) + 'px' }));
+        var blk = el('div', { class: 'wg-blk ' + (fixed ? 'fixed' : 'flex') + (it.done ? ' done' : '') + (it.priority === 'haute' ? ' hot' : ''), role: 'listitem', tabindex: '0',
+          'aria-label': fmt(o.start) + ' ' + it.title + (fixed ? ', rendez-vous fixe' : ', tâche flexible'),
+          style: 'top:' + y(o.start) + 'px;height:' + Math.max(18, (o.end - o.start) / 60 * HOUR_PX - 2) + 'px' },
+          el('b', { text: fmt(o.start) }), el('span', { text: it.title }));
+        blk.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSheet(it.id, d, 'move'); } });
+        attachGridDrag(blk, it, d, o, { h0: h0 });
+        col.appendChild(blk);
+      });
+      if (d === today()) {
+        var n = nowMin();
+        if (n >= h0 * 60 && n <= h1 * 60) col.appendChild(el('div', { class: 'wg-now', 'aria-hidden': 'true', style: 'top:' + y(n) + 'px' }));
+      }
+      body.appendChild(col);
+    });
+    g.appendChild(body);
+  }
+
+  // Appui long puis glisser : vers un autre jour (et une autre heure pour un rendez-vous fixe)
+  function attachGridDrag(blk, it, d, o, geo) {
+    var timer = null, start = null, drag = null;
+    blk.addEventListener('pointerdown', function (e) {
+      if (e.button > 0) return;
+      start = { x: e.clientX, y: e.clientY };
+      try { blk.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      timer = setTimeout(function () { drag = beginDrag(e); }, 300);
+    });
+    blk.addEventListener('pointermove', function (e) {
+      if (!start) return;
+      if (!drag) {
+        if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 8) {
+          clearTimeout(timer);
+          if (e.pointerType === 'mouse') drag = beginDrag(e); else start = null;
+        }
+        return;
+      }
+      moveDrag(e);
+    });
+    blk.addEventListener('pointerup', function (e) {
+      clearTimeout(timer);
+      if (drag) endDrag(e); else if (start) openSheet(it.id, d, 'move');
+      start = null; drag = null;
+    });
+    blk.addEventListener('pointercancel', function () { clearTimeout(timer); if (drag) cleanup(); start = null; drag = null; });
+
+    function beginDrag(e) {
+      buzz(25);
+      var r = blk.getBoundingClientRect();
+      var ghost = blk.cloneNode(true);
+      ghost.classList.add('wg-ghost');
+      ghost.style.cssText = 'position:fixed;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px';
+      document.body.appendChild(ghost);
+      blk.classList.add('wg-lifted');
+      return { ghost: ghost, dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width };
+    }
+    function target(e) {
+      var cols = document.querySelectorAll('.wg-col');
+      for (var i = 0; i < cols.length; i++) {
+        var r = cols[i].getBoundingClientRect();
+        if (e.clientX >= r.left && e.clientX <= r.right) return { col: cols[i], rect: r };
+      }
+      return null;
+    }
+    function moveDrag(e) {
+      drag.ghost.style.left = (e.clientX - drag.dx) + 'px';
+      drag.ghost.style.top = (e.clientY - drag.dy) + 'px';
+      document.querySelectorAll('.wg-col.over').forEach(function (c) { c.classList.remove('over'); });
+      var t = target(e);
+      if (t && t.col.dataset.date >= today()) {
+        t.col.classList.add('over');
+        if (isFixed(it)) {
+          var m = Math.round(((e.clientY - drag.dy - t.rect.top) / HOUR_PX * 60 + geo.h0 * 60) / 15) * 15;
+          drag.ghost.querySelector('b').textContent = fmt(Math.max(0, m));
+        }
+      }
+    }
+    function cleanup() {
+      if (drag && drag.ghost) drag.ghost.remove();
+      blk.classList.remove('wg-lifted');
+      document.querySelectorAll('.wg-col.over').forEach(function (c) { c.classList.remove('over'); });
+    }
+    function endDrag(e) {
+      var t = target(e);
+      var dyOff = drag.dy;
+      cleanup();
+      if (!t) return;
+      var nd = t.col.dataset.date;
+      if (nd < today()) { toast('Impossible de déplacer vers un jour passé.'); return; }
+      var patch = { date: nd }, label = frDate(nd, { weekday: 'long', day: 'numeric' });
+      if (isFixed(it)) {
+        var m = Math.round(((e.clientY - dyOff - t.rect.top) / HOUR_PX * 60 + geo.h0 * 60) / 15) * 15;
+        m = Math.max(0, Math.min(23 * 60 + 45, m));
+        patch.start = fmt(m); label += ' à ' + patch.start;
+        if (nd === d && patch.start === it.start) return;
+      } else if (nd === d) return;
+      withUndo('« ' + it.title + ' » → ' + label, function () { moveOccurrence(it.id, d, patch); });
+      buzz(20);
+    }
+  }
+
+  // ================= Déplacer toute une journée =================
+  var dayMenu = { d: null, withFixed: true, done: null };
+  function openDayMenu(d) {
+    dayMenu = { d: d, withFixed: true, done: null };
+    renderDayMenu();
+    var dl = $('#weekDlg');
+    if (!dl.open) { if (dl.showModal) dl.showModal(); else dl.setAttribute('open', ''); }
+    buzz(12);
+  }
+  function renderDayMenu() {
+    var d = dayMenu.d, body = $('#weekDlgBody'); body.innerHTML = '';
+    var occ = occurrences(d).filter(function (x) { return !x.done && x.repeat === 'none'; });
+    var nRoutine = occurrences(d).filter(function (x) { return !x.done && x.repeat !== 'none'; }).length;
+    $('#weekDlgWhen').textContent = 'Toute la journée';
+    $('#weekDlgTitle').textContent = cap(frDate(d));
+
+    if (dayMenu.done) {
+      $('#weekDlgTitle').textContent = 'Journée déplacée';
+      var ul = el('ul', { class: 'soslist' });
+      dayMenu.done.moved.forEach(function (m) {
+        ul.appendChild(el('li', { class: 'sosline ' + (m.fixed ? 'warn' : 'move') },
+          el('span', { class: 'ic', 'aria-hidden': 'true', text: m.fixed ? '!' : '↻' }),
+          el('span', { class: 'tx', text: m.title + (m.start ? ' · ' + m.start : '') + ' → ' + frDate(dayMenu.done.to, { weekday: 'long', day: 'numeric' }) }),
+          m.fixed && m.id ? el('button', { type: 'button', class: 'btn warn', onclick: function () {
+            $('#weekDlg').close();
+            openSheet(m.id, dayMenu.done.to, 'notify', 'moved');
+            sheet.fromDate = d; sheet.fromStart = m.start; renderSheet();
+          } }, 'Prévenir') : null));
+      });
+      body.appendChild(ul);
+      if (dayMenu.done.moved.some(function (m) { return m.fixed; })) body.appendChild(el('p', { class: 'hint', text: 'Pensez à prévenir pour les rendez-vous fixes : le message avec la nouvelle date est prêt.' }));
+      body.appendChild(el('button', { type: 'button', class: 'btn primary block', onclick: function () { $('#weekDlg').close(); } }, 'Terminé'));
+      return;
+    }
+
+    body.appendChild(el('button', { type: 'button', class: 'btn block', onclick: function () { $('#weekDlg').close(); currentDate = d; setMode('day'); } }, 'Voir la journée en détail'));
+    if (!occ.length) { body.appendChild(el('p', { class: 'hint', text: nRoutine ? 'Seules des étapes qui se répètent sont prévues ce jour-là. Faites-les glisser une par une pour les déplacer.' : 'Rien à déplacer ce jour-là.' })); return; }
+    var nFixed = occ.filter(isFixed).length, nFlex = occ.length - nFixed;
+    body.appendChild(el('p', { class: 'sectlabel', text: 'Déplacer toute la journée (' + occ.length + ' étape' + (occ.length > 1 ? 's' : '') + ') vers :' }));
+    var ws = weekStart(d);
+    var grid = el('div', { class: 'slots' });
+    daysBetween(ws, addDays(ws, 13)).filter(function (x) { return x !== d && x >= today(); }).slice(0, 9).forEach(function (x) {
+      var p = planDay(x);
+      var dt = parseDate(x);
+      grid.appendChild(el('button', { type: 'button', class: 'slot', onclick: function () { moveWholeDay(d, x); } },
+        el('small', { text: cap(dt.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric' })) }),
+        el('strong', { text: p.out.length ? p.out.length + ' étape' + (p.out.length > 1 ? 's' : '') : 'Libre' })));
+    });
+    body.appendChild(grid);
+    var other = el('input', { type: 'date', id: 'dayMoveDate', min: today(), 'aria-label': 'Autre date' });
+    body.appendChild(el('div', { class: 'searchrow' }, other,
+      el('button', { type: 'button', class: 'btn', onclick: function () { if (other.value && other.value !== d) moveWholeDay(d, other.value); } }, 'Déplacer')));
+    if (nFixed) {
+      var cb = el('input', { type: 'checkbox', id: 'dayMoveFixed' });
+      cb.checked = dayMenu.withFixed;
+      cb.addEventListener('change', function () { dayMenu.withFixed = cb.checked; });
+      body.appendChild(el('label', { class: 'check', for: 'dayMoveFixed' }, cb,
+        nFixed > 1 ? ' Déplacer aussi les ' + nFixed + ' rendez-vous fixes (même heure)' : ' Déplacer aussi le rendez-vous fixe (même heure)'));
+    }
+    if (nRoutine) body.appendChild(el('p', { class: 'hint', text: 'Les étapes qui se répètent (travail tous les jours…) restent à leur place. Pour en déplacer une, faites-la glisser.' }));
+  }
+  function moveWholeDay(from, to) {
+    var occ = occurrences(from).filter(function (x) { return !x.done && x.repeat === 'none' && (dayMenu.withFixed || !isFixed(x)); });
+    if (!occ.length) return;
+    var moved = [];
+    withUndo('Journée déplacée au ' + frDate(to, { weekday: 'long', day: 'numeric' }), function () {
+      occ.forEach(function (x) {
+        moveOccurrence(x.id, from, { date: to });
+        var nowItem = state.items.filter(function (i) { return i.title === x.title && occursOn(i, to) && (i.start || '') === (x.start || ''); })[0];
+        moved.push({ id: nowItem ? nowItem.id : null, title: x.title, start: x.start, fixed: isFixed(x) });
+      });
+    });
+    buzz(30);
+    dayMenu.done = { to: to, moved: moved };
+    renderDayMenu();
+  }
+
   function renderWeek(ws) {
     renderWeekAlert(ws);
     $('#organizeWeek').hidden = addDays(ws, 6) < today();
+    var grid = weekDisplay() === 'grid';
+    $('#wGridBtn').setAttribute('aria-selected', grid); $('#wListBtn').setAttribute('aria-selected', !grid);
+    $('#weekGrid').hidden = !grid; $('#week').hidden = grid; $('#wGridHint').hidden = !grid;
+    if (grid) { renderWeekGrid(ws); return; }
     var box = $('#week'); box.innerHTML = '';
     for (var i = 0; i < 7; i++) {
       (function (d) {
