@@ -435,6 +435,49 @@
   var REMOTE = /\b(appeler|telephoner|mail|email|envoyer|payer|reserver|commander|visio|teams|zoom|rappeler)\b/;
   var DAYS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
 
+  // Prochain jour de la semaine donné, à partir de `from` (inclus, sauf si `strict`)
+  function nextDay(from, name, strict) {
+    var target = DAYS.indexOf(name.toLowerCase()), x = parseDate(from);
+    if (strict) x.setDate(x.getDate() + 1);
+    while (x.getDay() !== target) x.setDate(x.getDate() + 1);
+    return dateStr(x);
+  }
+
+  // ================= Choisir le meilleur jour =================
+  // Essaie chaque jour possible et garde celui où la tâche rentre le mieux (charge + trajet)
+  // Jours de fermeture habituels (0 = dimanche, 1 = lundi, 6 = samedi)
+  var CLOSED = [
+    { re: /\b(banque|poste|recommande|pressing|cordonnier)\b/, days: [0] },
+    { re: /\b(mairie|prefecture|caf|cpam|impots|notaire|administration)\b/, days: [0, 6] },
+    { re: /\b(coiffeur|barbier)\b/, days: [0, 1] }
+  ];
+  function closedOn(item, d) {
+    var n = norm(item.title + ' ' + (item.query || ''));
+    var dow = parseDate(d).getDay();
+    return CLOSED.some(function (c) { return c.re.test(n) && c.days.indexOf(dow) >= 0; });
+  }
+  function bestDay(item, days, avoid, keep) {
+    var avail = Math.max(60, toMin(state.settings.dayEnd) - toMin(state.settings.dayStart));
+    var best = null;
+    days.forEach(function (d) {
+      if (d < today() || (avoid && avoid.indexOf(d) >= 0) || closedOn(item, d)) return;
+      var p = simulate(d, function (items) {
+        var x = items.filter(function (i) { return i.id === item.id; })[0];
+        if (x) x.date = d; else items.push(Object.assign({}, JSON.parse(JSON.stringify(item)), { date: d }));
+      });
+      if (p.leftover.some(function (t) { return t.id === item.id; })) return;
+      var o = p.out.filter(function (x) { return x.item.id === item.id; })[0];
+      var score = (p.busy + p.missing) / avail * 100 + (o ? o.travel : 0) + p.leftover.length * 60 + (days.indexOf(d) * 0.5) - (keep === d ? 15 : 0);
+      if (!best || score < best.score) best = { d: d, score: score };
+    });
+    return best ? best.d : null;
+  }
+  function daysBetween(from, to) {
+    var out = [];
+    for (var d = from; d <= to && out.length < 31; d = addDays(d, 1)) out.push(d);
+    return out;
+  }
+
   function parseQuick(text) {
     return text.split(/[,;\n]+|\s+(?:et|puis)\s+/i).map(function (s) { return s.trim(); }).filter(Boolean).map(function (chunk) {
       var it = { fixed: false, start: '', deadline: '', duration: 0, priority: 'normale', repeat: 'none', date: currentDate, online: false, place: null, locationText: '', query: '' };
@@ -452,7 +495,31 @@
         while (x.getDay() !== target) x.setDate(x.getDate() + 1);
         it.date = dateStr(x); return ' ';
       });
-      t = t.replace(/\b(demain)\b/i, function () { it.date = addDays(currentDate, 1); return ' '; });
+      // Jours et semaine : « lundi », « mardi prochain », « cette semaine », « 2 fois cette semaine », « avant vendredi », « ce week-end »
+      // En vue Semaine, « jeudi » désigne le jeudi de la semaine affichée
+      var base = viewMode === 'week' ? weekStart(currentDate) : currentDate;
+      if (base < today()) base = today();
+      var wkFrom = weekStart(currentDate) < today() ? today() : weekStart(currentDate);
+      var wkTo = addDays(weekStart(currentDate), 6);
+      t = t.replace(/\b(\d)\s*fois\s+(?:cette semaine|par semaine|dans la semaine)\b/i, function (m, n) { it.times = Math.min(7, +n); it.window = { from: wkFrom, to: wkTo }; return ' '; });
+      t = t.replace(/\b(?:cette semaine|dans la semaine|d'ici dimanche)\b/i, function () { it.window = { from: wkFrom, to: wkTo }; return ' '; });
+      t = t.replace(/\b(?:la\s+)?semaine prochaine\b/i, function () { var f = addDays(weekStart(currentDate), 7); it.window = { from: f, to: addDays(f, 6) }; return ' '; });
+      t = t.replace(/\bce\s+(?:week-?end|we)\b/i, function () {
+        var sat = addDays(weekStart(currentDate), 5); it.window = { from: sat < today() ? today() : sat, to: addDays(sat, 1) }; return ' ';
+      });
+      t = t.replace(/\bavant\s+(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b/i, function (m, d) {
+        var target = nextDay(base, d, true);
+        it.window = { from: base, to: addDays(target, -1) < base ? base : addDays(target, -1) }; return ' ';
+      });
+      t = t.replace(/\b(apres-demain|après-demain)\b/i, function () { it.date = addDays(base, 2); return ' '; });
+      t = t.replace(/\b(demain)\b/i, function () { it.date = addDays(base, 1); return ' '; });
+      t = t.replace(/\b(aujourd'hui|ce soir|ce matin)\b/i, function () { it.date = base; return ' '; });
+      if (it.repeat === 'none') {
+        t = t.replace(/\b(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)(\s+prochain)?\b/i, function (m, d, next) {
+          it.date = nextDay(base, d, !!next); return ' ';
+        });
+      }
+      if (it.window) it.date = it.window.from;
       t = t.replace(/^\s*(je dois|il faut|faut|penser à|ne pas oublier de)\s+/i, ' ');
       t = t.replace(/\s+(à|a|pour|vers)\s*$/i, ' ').replace(/\s+/g, ' ').trim();
       it.title = cap(t || chunk.trim());
@@ -476,21 +543,37 @@
     var text = $('#quickInput').value.trim();
     if (!text) { $('#quickInput').focus(); return; }
     var parsed = parseQuick(text);
-    var created = parsed.map(function (p) {
-      var item = {
-        id: uid(), title: p.title, fixed: p.fixed, date: p.date, start: p.start, deadline: p.deadline,
-        duration: p.duration, priority: p.priority, repeat: p.repeat, skip: [], doneDates: {},
-        locationText: '', place: p.place, online: p.online, source: 'manuel', query: p.query || ''
-      };
-      state.items.push(item);
-      return { item: item, query: p.query };
+    var created = [], placedOn = [];
+    parsed.forEach(function (p) {
+      var copies = p.times || 1, used = [];
+      for (var k = 0; k < copies; k++) {
+        var item = {
+          id: uid(), title: p.title, fixed: p.fixed, date: p.date, start: p.start, deadline: p.deadline,
+          duration: p.duration, priority: p.priority, repeat: p.repeat, skip: [], doneDates: {},
+          locationText: '', place: p.place, online: p.online, source: 'manuel', query: p.query || ''
+        };
+        if (p.window && !p.fixed) {
+          item.window = p.window;
+          var days = daysBetween(p.window.from, p.window.to);
+          // pour une tâche à faire plusieurs fois, on évite deux fois le même jour
+          var d = bestDay(item, days, used) || bestDay(item, days) || days.filter(function (x) { return x >= today(); })[0] || p.window.from;
+          item.date = d; used.push(d);
+          placedOn.push(item.title + ' → ' + frDate(d, { weekday: 'long' }));
+        } else if (p.window && p.fixed) {
+          item.date = p.window.from;
+        }
+        state.items.push(item);
+        created.push({ item: item, query: p.query });
+      }
     });
     save();
     $('#quickInput').value = '';
+    // en vue Jour, on affiche le jour du premier élément ajouté s'il n'est pas sur le jour courant
+    if (viewMode === 'day' && created.length && !created.some(function (c) { return c.item.date === currentDate; })) currentDate = created[0].item.date;
     render();
     var toFind = created.filter(function (c) { return c.query; });
-    var msg = created.length + (created.length > 1 ? ' éléments ajoutés' : ' élément ajouté');
-    if (!toFind.length) { toast(msg + ' et organisés.'); return; }
+    var msg = created.length + (created.length > 1 ? ' éléments ajoutés' : ' élément ajouté') + (placedOn.length ? ' (' + placedOn.join(', ') + ')' : '');
+    if (!toFind.length) { toast(msg + (created.length > 1 ? ', tout est organisé.' : ' et organisé.')); return; }
     if (!state.settings.home) {
       toFind.forEach(function (c) { c.item.locationText = c.query; });
       save(); render();
@@ -556,6 +639,13 @@
   function render() {
     var week = viewMode === 'week';
     $('#dayPane').hidden = week; $('#weekPane').hidden = !week;
+    // L'ajout rapide suit la vue affichée
+    var qf = $('#quickForm');
+    var slot = week ? $('#weekQuickSlot') : $('#dayPane');
+    if (qf.parentNode !== slot) { if (week) slot.appendChild(qf); else slot.insertBefore(qf, slot.firstChild); }
+    $('#quickInput').placeholder = week
+      ? 'Ex. lundi dentiste à 9h, banque cette semaine, sport 2 fois cette semaine, coiffeur avant vendredi'
+      : 'Ex. dentiste à 9h, pharmacie, colis avant 12h, appeler maman 10 min';
     if (week) {
       var ws = weekStart(currentDate);
       $('#dayTitle').textContent = 'Semaine du ' + frDate(ws, { day: 'numeric', month: 'long' });
@@ -1191,8 +1281,122 @@
     } }, 'Appliquer ce nouveau plan'));
   }
 
+  // ================= Organiser ma semaine =================
+  // Tâches qu'on peut déplacer : flexibles, ponctuelles, pas faites, dans la semaine (à partir d'aujourd'hui).
+  // On redistribue celles qui ont une fenêtre (« cette semaine »…) et celles qui ne rentrent pas dans leur jour.
+  function planWeek(ws) {
+    var days = daysBetween(ws, addDays(ws, 6)).filter(function (d) { return d >= today(); });
+    if (!days.length) return { changes: [], stuck: [] };
+    var overflow = {};
+    days.forEach(function (d) { planDay(d).leftover.forEach(function (t) { overflow[t.id] = true; }); });
+    var movable = state.items.filter(function (i) {
+      return i.repeat === 'none' && !isFixed(i) && !i.doneDates[i.date] && days.indexOf(i.date) >= 0 && (i.window || overflow[i.id]);
+    });
+    movable.sort(function (a, b) {
+      var pa = a.priority === 'haute' ? 0 : 1, pb = b.priority === 'haute' ? 0 : 1;
+      var wa = a.window ? daysBetween(a.window.from, a.window.to).length : 9, wb = b.window ? daysBetween(b.window.from, b.window.to).length : 9;
+      return pa - pb || wa - wb || (+b.duration || 0) - (+a.duration || 0);
+    });
+    var backup = state.items, changes = [], stuck = [];
+    state.items = JSON.parse(JSON.stringify(backup));
+    try {
+      var ids = movable.map(function (m) { return m.id; });
+      state.items.forEach(function (i) { if (ids.indexOf(i.id) >= 0) i.date = '0000-00-00'; }); // on les retire d'abord
+      var usedByTitle = {};
+      movable.forEach(function (m) {
+        var allowed = days.filter(function (d) { return !m.window || (d >= m.window.from && d <= m.window.to); });
+        if (!m.window) allowed = allowed.filter(function (d) { return d >= m.date; });
+        var x = state.items.filter(function (i) { return i.id === m.id; })[0];
+        var avoid = usedByTitle[m.title] || [];
+        var keep = overflow[m.id] ? null : m.date; // on garde le jour actuel sauf si ça vaut vraiment le coup
+        var pick = bestDay(x, allowed, avoid, keep) || bestDay(x, allowed, null, keep);
+        x.date = pick || m.date;
+        if (!pick) stuck.push(m);
+        usedByTitle[m.title] = avoid.concat([x.date]);
+        if (x.date !== m.date) changes.push({ id: m.id, title: m.title, from: m.date, to: x.date });
+      });
+    } finally { state.items = backup; }
+    return { changes: changes, stuck: stuck };
+  }
+
+  var weekPlan = null;
+  $('#organizeWeek').addEventListener('click', function () {
+    var ws = weekStart(currentDate);
+    weekPlan = planWeek(ws);
+    renderWeekDlg(ws, false);
+    var dl = $('#weekDlg');
+    if (!dl.open) { if (dl.showModal) dl.showModal(); else dl.setAttribute('open', ''); }
+    buzz(15);
+  });
+  $('#weekDlgClose').addEventListener('click', function () { $('#weekDlg').close(); });
+  $('#weekDlg').addEventListener('click', function (e) { if (e.target === this) this.close(); });
+  function dayShort(d) { return cap(frDate(d, { weekday: 'long', day: 'numeric' })); }
+  function renderWeekDlg(ws, applied) {
+    var body = $('#weekDlgBody'); body.innerHTML = '';
+    $('#weekDlgWhen').textContent = 'Semaine du ' + frDate(ws, { day: 'numeric', month: 'long' });
+    var ch = weekPlan.changes;
+    $('#weekDlgTitle').textContent = applied ? 'Semaine réorganisée' : (ch.length ? ch.length + ' changement' + (ch.length > 1 ? 's' : '') + ' proposé' + (ch.length > 1 ? 's' : '') : 'Votre semaine est déjà bien organisée');
+    var ul = el('ul', { class: 'soslist' });
+    ch.forEach(function (c) {
+      ul.appendChild(el('li', { class: 'sosline move' }, el('span', { class: 'ic', 'aria-hidden': 'true', text: '↻' }),
+        el('span', { class: 'tx', text: c.title + ' : ' + dayShort(c.from) + ' → ' + dayShort(c.to) })));
+    });
+    weekPlan.stuck.forEach(function (m) {
+      ul.appendChild(el('li', { class: 'sosline warn' }, el('span', { class: 'ic', 'aria-hidden': 'true', text: '!' }),
+        el('span', { class: 'tx', text: m.title + ' ne rentre nulle part cette semaine' })));
+    });
+    if (!ch.length && !weekPlan.stuck.length) ul.appendChild(el('li', { class: 'sosline keep' }, el('span', { class: 'ic', 'aria-hidden': 'true', text: '✓' }),
+      el('span', { class: 'tx', text: 'Chaque tâche est déjà sur le meilleur jour, et aucun jour ne déborde.' })));
+    body.appendChild(ul);
+    if (!applied && ch.length) {
+      body.appendChild(el('p', { class: 'hint', text: 'Les rendez-vous fixes ne bougent pas. Seules les tâches flexibles changent de jour, pour équilibrer la semaine et limiter les trajets.' }));
+      body.appendChild(el('button', { type: 'button', class: 'btn primary block', onclick: function () {
+        withUndo('Semaine réorganisée', function () {
+          ch.forEach(function (c) { var it = byId(c.id); if (it) it.date = c.to; });
+          save(); render();
+        });
+        buzz(30);
+        renderWeekDlg(ws, true);
+      } }, 'Appliquer'));
+    } else {
+      body.appendChild(el('button', { type: 'button', class: 'btn block', onclick: function () { $('#weekDlg').close(); } }, 'Fermer'));
+    }
+  }
+
+  // Alerte : jours trop chargés dans la semaine, avec une solution par tâche qui déborde
+  function renderWeekAlert(ws) {
+    var box = $('#weekAlert'); box.innerHTML = '';
+    var days = daysBetween(ws, addDays(ws, 6)).filter(function (d) { return d >= today(); });
+    var full = [];
+    days.forEach(function (d) { var p = planDay(d); if (p.leftover.length) full.push({ d: d, p: p }); });
+    box.hidden = !full.length;
+    if (!full.length) return;
+    box.appendChild(el('div', { class: 'ov-head' },
+      el('span', { class: 'ov-badge', text: 'Semaine trop chargée' }),
+      el('h2', { text: full.map(function (f) { return cap(frDate(f.d, { weekday: 'long' })); }).join(', ') + (full.length > 1 ? ' débordent' : ' déborde') })));
+    var shown = 0;
+    full.forEach(function (f) {
+      f.p.leftover.forEach(function (t) {
+        if (shown >= 3) return;
+        var src = byId(t.id);
+        if (!src || src.repeat !== 'none') return;
+        var target = bestDay(src, days.filter(function (d) { return d !== f.d; }));
+        if (!target) return;
+        shown++;
+        box.appendChild(el('button', { type: 'button', class: 'fix', onclick: function () {
+          withUndo('« ' + t.title + ' » déplacé', function () { src.date = target; save(); render(); });
+          buzz(20);
+        } }, el('span', { text: 'Déplacer « ' + t.title + ' » de ' + frDate(f.d, { weekday: 'long' }) + ' à ' + frDate(target, { weekday: 'long' }) }),
+          el('small', { class: 'good', text: 'Rentre sans surcharger ' + frDate(target, { weekday: 'long' }) })));
+      });
+    });
+    if (!shown) box.appendChild(el('p', { class: 'hint', text: 'Aucun autre jour de la semaine n\'a assez de place. Essayez de raccourcir ou de reporter une tâche à la semaine prochaine.' }));
+  }
+
   // ================= Vue Semaine =================
   function renderWeek(ws) {
+    renderWeekAlert(ws);
+    $('#organizeWeek').hidden = addDays(ws, 6) < today();
     var box = $('#week'); box.innerHTML = '';
     for (var i = 0; i < 7; i++) {
       (function (d) {

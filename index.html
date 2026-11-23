@@ -40,7 +40,7 @@
         <label for="quickInput">Ajout rapide</label>
         <textarea id="quickInput" rows="2" placeholder="Ex. dentiste à 9h, pharmacie, colis avant 12h, appeler maman 10 min"></textarea>
         <div class="quickrow">
-          <p class="hint">Séparez par des virgules. L'app comprend les heures, « avant 12h », les durées et « urgent ».</p>
+          <p class="hint" id="quickHint">Séparez par des virgules. L'app comprend les heures, les jours (« jeudi », « cette semaine »), « avant 12h », les durées et « urgent ».</p>
           <button type="submit" class="btn primary">Organiser</button>
         </div>
         <div class="presetblock">
@@ -78,6 +78,9 @@
     </div>
 
     <div id="weekPane" class="pane" hidden>
+      <div id="weekQuickSlot"></div>
+      <div id="weekAlert" class="overload" role="region" aria-label="Semaine trop chargée" hidden></div>
+      <button type="button" class="btn primary block" id="organizeWeek" aria-haspopup="dialog">Organiser ma semaine</button>
       <div id="week" class="week"></div>
     </div>
   </section>
@@ -338,6 +341,20 @@
       <button type="button" class="icon-btn" id="sosClose" aria-label="Fermer">×</button>
     </header>
     <div id="sosBody" class="stack"></div>
+  </div>
+</dialog>
+
+<dialog id="weekDlg" class="sheet" aria-labelledby="weekDlgTitle">
+  <div class="sheet-inner">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <header class="sheet-head">
+      <div>
+        <p class="eyebrow" id="weekDlgWhen">Ma semaine</p>
+        <h2 id="weekDlgTitle">Nouvelle organisation</h2>
+      </div>
+      <button type="button" class="icon-btn" id="weekDlgClose" aria-label="Fermer">×</button>
+    </header>
+    <div id="weekDlgBody" class="stack"></div>
   </div>
 </dialog>
 
