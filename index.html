@@ -53,6 +53,8 @@
         Indiquez votre point de départ dans <button class="link-btn inline" data-goto="settings">Réglages</button> pour calculer les trajets et trouver les lieux près de chez vous.
       </div>
       <div id="nextUp" class="nextup" hidden></div>
+      <div id="overload" class="overload" role="region" aria-label="Journée trop chargée" hidden></div>
+      <button type="button" class="btn sos block" id="sosBtn" aria-haspopup="dialog" hidden>SOS · Ma journée dérape</button>
 
       <div class="stats" id="stats"></div>
       <div id="timeline" class="timeline"></div>
@@ -241,6 +243,7 @@
       </div>
       <label for="sBuffer">Marge entre deux étapes (min)</label>
       <input id="sBuffer" type="number" min="0" step="5">
+      <label class="check"><input type="checkbox" id="sMargins"> Marges intelligentes (arriver 10 min avant chez le médecin, 20 min à la gare…)</label>
       <label for="sName">Votre prénom (pour signer vos messages)</label>
       <input id="sName" autocomplete="given-name" placeholder="Facultatif">
     </div>
@@ -275,7 +278,21 @@
 
     <div class="box">
       <h2>Mes données</h2>
-      <p class="hint">Tout est enregistré uniquement sur cet appareil. Rien n'est envoyé à un serveur, sauf les recherches de lieux.</p>
+      <p class="privacy">Vos rendez-vous restent sur ce téléphone. Pas de compte, pas de serveur : seuls les noms de lieux recherchés sont envoyés à OpenStreetMap.</p>
+      <p class="hint">Faites une sauvegarde de temps en temps : elle vous permet de changer de téléphone ou de tout récupérer si le navigateur efface ses données.</p>
+      <div class="grid2">
+        <button type="button" class="btn" id="backupBtn">Sauvegarder</button>
+        <label class="btn filebtn" for="restoreFile">Restaurer</label>
+      </div>
+      <input type="file" id="restoreFile" accept=".json,application/json" class="visually-hidden">
+      <p class="hint" id="backupInfo"></p>
+      <div id="restoreConfirm" class="confirm" hidden>
+        <p id="restoreText"></p>
+        <div class="grid2">
+          <button type="button" class="btn" id="restoreNo">Annuler</button>
+          <button type="button" class="btn dangerfill" id="restoreYes">Remplacer mes données</button>
+        </div>
+      </div>
       <button type="button" class="btn block" id="demoBtn">Charger un exemple</button>
       <button type="button" class="btn danger block" id="wipeBtn">Effacer toutes mes données</button>
       <div id="wipeConfirm" class="confirm" hidden>
@@ -309,6 +326,20 @@
 </div>
 
 <div id="toast" class="toast" role="status" hidden><span id="toastText"></span><button type="button" id="toastUndo" hidden>Annuler</button></div>
+
+<dialog id="sos" class="sheet" aria-labelledby="sosTitle">
+  <div class="sheet-inner">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <header class="sheet-head">
+      <div>
+        <p class="eyebrow">SOS Journée</p>
+        <h2 id="sosTitle">Combien de temps avez-vous perdu ?</h2>
+      </div>
+      <button type="button" class="icon-btn" id="sosClose" aria-label="Fermer">×</button>
+    </header>
+    <div id="sosBody" class="stack"></div>
+  </div>
+</dialog>
 
 <dialog id="sheet" class="sheet" aria-labelledby="sheetTitle">
   <div class="sheet-inner">

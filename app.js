@@ -10,7 +10,7 @@
   var viewMode = 'day';
   var editingId = null;
   var pickedPlace = null;
-  var openMissed = {};
+  var packOpen = {};
   var notified = {};
   var map = null, mapLayer = null;
   var installEvent = null;
@@ -44,7 +44,7 @@
   function nowMin() { var n = new Date(); return n.getHours() * 60 + n.getMinutes(); }
   function toMin(t) { if (!t) return 0; var p = t.split(':'); return (+p[0]) * 60 + (+p[1]); }
   function fmt(m) { m = Math.round(m); return pad(Math.floor(m / 60) % 24) + ':' + pad(m % 60); }
-  function dur(m) { return m >= 60 ? Math.floor(m / 60) + ' h' + (m % 60 ? ' ' + pad(m % 60) : '') : m + ' min'; }
+  function dur(m) { return m >= 60 ? Math.floor(m / 60) + ' h' + (m % 60 ? ' ' + pad(m % 60) : '') : m + ' min'; }
   function norm(s) { return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
   function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
   function frDate(s, opts) { return parseDate(s).toLocaleDateString('fr-FR', opts || { weekday: 'long', day: 'numeric', month: 'long' }); }
@@ -151,6 +151,22 @@
   function isFixed(i) { return i.fixed && i.start; }
   function placeOf(i) { return i.online ? null : i.place; }
 
+  // Marges intelligentes : arriver un peu en avance selon le type de rendez-vous
+  var MARGINS = [
+    { re: /\b(train|tgv|gare|aeroport|avion|vol)\b/, m: 20, why: 'gare / aéroport' },
+    { re: /\b(medecin|docteur|dentiste|hopital|clinique|radio|irm|prise de sang|laboratoire|kine|ophtalmo|dermato|gyneco|pediatre|veterinaire|generaliste)\b/, m: 10, why: 'accueil et salle d\'attente' },
+    { re: /\b(prefecture|mairie|caf|cpam|pole emploi|france travail|impots|banque|notaire|avocat|tribunal|consulat|ambassade)\b/, m: 10, why: 'accueil' },
+    { re: /\b(entretien|examen|concours|partiel|oral|soutenance)\b/, m: 15, why: 'ne pas arriver juste' },
+    { re: /\b(reunion|rdv client|client|rendez-vous pro)\b/, m: 5, why: 'arriver à l\'heure' },
+    { re: /\b(cinema|concert|spectacle|theatre|match)\b/, m: 10, why: 'installation' }
+  ];
+  function marginInfo(it) {
+    if (state.settings.smartMargins === false || it.online || !isFixed(it)) return { m: 0, why: '' };
+    var n = norm(it.title);
+    var hit = MARGINS.filter(function (x) { return x.re.test(n); })[0];
+    return hit ? { m: hit.m, why: hit.why } : { m: 0, why: '' };
+  }
+
   function planDay(date) {
     var s = state.settings;
     var items = occurrences(date);
@@ -162,12 +178,13 @@
 
     var cur = toMin(s.dayStart);
     if (isToday) cur = Math.max(cur, Math.ceil(nowMin() / 5) * 5);
+    if (s.resume && s.resume.date === date) cur = Math.max(cur, s.resume.min); // reprise après un imprévu (SOS)
     var end = toMin(s.dayEnd);
     var pos = s.home;
     var out = [];
 
     fixed.concat([null]).forEach(function (f) {
-      var limit = f ? toMin(f.start) : end;
+      var limit = f ? toMin(f.start) - marginInfo(f).m : end;
       var fPlace = f ? placeOf(f) : null;
       for (;;) {
         var best = null;
@@ -198,9 +215,12 @@
           return;
         }
         var tt = travel(pos, fPlace);
-        var late = !f.done && cur + tt + (tt ? buffer : 0) > st;
-        out.push({ item: f, start: st, end: st + fd, travel: tt, late: late, leaveAt: st - tt - (tt ? buffer : 0) });
-        cur = Math.max(cur + tt, st) + fd;
+        var mi = marginInfo(f);
+        var arrive = cur + tt + (tt ? buffer : 0);
+        var lateBy = f.done ? 0 : arrive + mi.m - st;
+        out.push({ item: f, start: st, end: st + fd, travel: tt, late: lateBy > 0, lateBy: Math.max(0, arrive - st), margin: mi.m, marginWhy: mi.why,
+          leaveAt: st - tt - (tt ? buffer : 0) - mi.m });
+        cur = Math.max(arrive, st) + fd;
         if (fPlace) pos = fPlace;
       }
     });
@@ -208,8 +228,44 @@
     var backHome = s.home && pos && pos !== s.home ? travel(pos, s.home) : 0;
     var totalTravel = out.reduce(function (a, o) { return a + o.travel; }, 0) + backHome;
     flex.forEach(function (t) { t.missedDeadline = !!t.deadline; });
-    return { out: out, leftover: flex, doneFlex: doneFlex, totalTravel: totalTravel, finish: cur, backHome: backHome };
+    var missing = flex.reduce(function (a, t) { return a + (+t.duration || 15) + (placeOf(t) ? 10 : 0); }, 0);
+    var busy = out.reduce(function (a, o) { return a + (o.past ? 0 : o.end - o.start + o.travel); }, 0);
+    return { out: out, leftover: flex, doneFlex: doneFlex, totalTravel: totalTravel, finish: cur, backHome: backHome, missing: missing, busy: busy };
   }
+
+  // Rejoue la planification sur une copie modifiée, sans toucher aux vraies données
+  function simulate(date, change) {
+    var backup = state.items;
+    state.items = JSON.parse(JSON.stringify(backup));
+    try { change(state.items); return planDay(date); } finally { state.items = backup; }
+  }
+
+  // ================= Pense-bête avant de partir =================
+  var PACKS = [
+    { re: /\b(medecin|docteur|generaliste|pediatre|dermato|ophtalmo|gyneco|kine|specialiste|hopital|clinique|radio|irm)\b/, list: ['Carte Vitale', 'Carte de mutuelle', 'Ordonnance ou courrier'] },
+    { re: /\b(dentiste|orthodontiste)\b/, list: ['Carte Vitale', 'Carte de mutuelle'] },
+    { re: /\b(prise de sang|laboratoire|analyse)\b/, list: ['Carte Vitale', 'Ordonnance', 'Être à jeun ?'] },
+    { re: /\b(pharmacie|medicaments|ordonnance)\b/, list: ['Ordonnance', 'Carte Vitale'] },
+    { re: /\b(colis|relais|poste|recommande)\b/, list: ['Avis de passage ou code de retrait', 'Pièce d\'identité'] },
+    { re: /\b(banque|notaire)\b/, list: ['Pièce d\'identité', 'RIB', 'Documents demandés'] },
+    { re: /\b(prefecture|mairie|caf|cpam|impots|consulat|passeport|carte d'identite)\b/, list: ['Pièce d\'identité', 'Justificatif de domicile', 'Dossier complet', 'Photos d\'identité'] },
+    { re: /\b(sport|gym|piscine|muscu|foot|yoga|tennis|course a pied)\b/, list: ['Tenue de sport', 'Gourde', 'Serviette', 'Cadenas'] },
+    { re: /\b(travail|boulot|bureau)\b/, list: ['Badge', 'Ordinateur', 'Chargeur'] },
+    { re: /\b(ecole|creche|enfants|nounou)\b/, list: ['Cartable', 'Goûter', 'Doudou'] },
+    { re: /\b(courses|supermarche|epicerie|marche)\b/, list: ['Sacs', 'Liste de courses'] },
+    { re: /\b(train|tgv|gare|avion|aeroport|vol)\b/, list: ['Billet', 'Pièce d\'identité', 'Chargeur'] },
+    { re: /\b(entretien|examen|concours|partiel)\b/, list: ['Convocation', 'Pièce d\'identité', 'CV ou dossier', 'Stylo'] },
+    { re: /\b(veterinaire)\b/, list: ['Carnet de santé de l\'animal', 'Laisse ou caisse'] },
+    { re: /\b(garage|controle technique)\b/, list: ['Carte grise', 'Clés du véhicule'] },
+    { re: /\b(reunion|visio|teams|zoom)\b/, list: ['Lien de la réunion', 'Casque'] }
+  ];
+  function packList(it) {
+    if (Array.isArray(it.pack)) return it.pack;
+    var n = norm(it.title);
+    var hit = PACKS.filter(function (p) { return p.re.test(n); })[0];
+    return hit ? hit.list.slice() : [];
+  }
+  function packChecked(it, d) { return (it.packDone && it.packDone[d]) || {}; }
 
   // ================= Liens externes =================
   function placeParam(p) { return p.lat + ',' + p.lon; }
@@ -270,18 +326,54 @@
     var h = state.settings.home;
     return nominatim('limit=6&q=' + encodeURIComponent(q) + (h ? viewbox(h, 0.4, 0.25) : ''));
   }
-  // Le lieu de ce type le plus proche du point de départ
-  function geocodeNearest(q) {
+  // « C'est sur le chemin » : parmi les lieux de ce type, celui qui ajoute le moins de détour
+  // au trajet déjà prévu ce jour-là (maison → rendez-vous fixes → maison)
+  function routePoints(date) {
+    var h = state.settings.home;
+    var pts = h ? [h] : [];
+    occurrences(date).filter(function (x) { return isFixed(x) && placeOf(x); })
+      .sort(function (a, b) { return toMin(a.start) - toMin(b.start); })
+      .forEach(function (x) { pts.push(x.place); });
+    if (h) pts.push(h);
+    return pts;
+  }
+  function kmMin(k) { return Math.max(1, Math.round(k * 1.3 / SPEED[state.settings.mode] * 60)); }
+  function detourKm(pts, c) {
+    if (pts.length < 2) return pts.length ? 2 * km(pts[0], c) : 0;
+    var best = Infinity;
+    for (var i = 0; i < pts.length - 1; i++) {
+      var extra = km(pts[i], c) + km(c, pts[i + 1]) - km(pts[i], pts[i + 1]);
+      if (extra < best) best = extra;
+    }
+    return Math.max(0, best);
+  }
+  function geocodeNearest(q, date) {
     var h = state.settings.home;
     if (!h) return geocode(q).then(function (l) { return l[0] || null; });
-    function nearest(list) {
+    var pts = routePoints(date || currentDate);
+    var lats = pts.map(function (p) { return p.lat; }), lons = pts.map(function (p) { return p.lon; });
+    var box = '&viewbox=' + (Math.min.apply(null, lons) - 0.02) + ',' + (Math.max.apply(null, lats) + 0.015) + ',' + (Math.max.apply(null, lons) + 0.02) + ',' + (Math.min.apply(null, lats) - 0.015);
+    function best(list) {
       if (!list.length) return null;
-      return list.sort(function (a, b) { return km(h, a) - km(h, b); })[0];
+      list.forEach(function (c) { c._d = detourKm(pts, c); });
+      list.sort(function (a, b) { return a._d - b._d; });
+      var pick = list[0];
+      var closest = list.slice().sort(function (a, b) { return km(h, a) - km(h, b); })[0];
+      pick.detour = kmMin(pick._d) <= 2 ? 0 : kmMin(pick._d);
+      if (closest !== pick) pick.closestDetour = kmMin(closest._d);
+      list.forEach(function (c) { delete c._d; });
+      return pick;
     }
-    return nominatim('limit=10&bounded=1&q=' + encodeURIComponent(q) + viewbox(h, 0.03, 0.02)).then(function (l) {
-      if (l.length) return nearest(l);
-      return nominatim('limit=10&bounded=1&q=' + encodeURIComponent(q) + viewbox(h, 0.1, 0.07)).then(nearest);
+    return nominatim('limit=40&bounded=1&q=' + encodeURIComponent(q) + box).then(function (l) {
+      if (l.length) return best(l);
+      return nominatim('limit=20&bounded=1&q=' + encodeURIComponent(q) + viewbox(h, 0.1, 0.07)).then(best);
     });
+  }
+  function onRouteToast(pl) {
+    if (!pl) return;
+    var t = 'Trouvé : ' + pl.name + (pl.detour ? ' · +' + pl.detour + ' min de détour' : ' · pile sur votre trajet');
+    if (pl.closestDetour && pl.closestDetour > (pl.detour || 0) + 2) t += ' (le plus proche de chez vous : +' + pl.closestDetour + ' min)';
+    toast(t);
   }
 
   function setupSearch(input, btn, results, onPick) {
@@ -388,7 +480,7 @@
       var item = {
         id: uid(), title: p.title, fixed: p.fixed, date: p.date, start: p.start, deadline: p.deadline,
         duration: p.duration, priority: p.priority, repeat: p.repeat, skip: [], doneDates: {},
-        locationText: p.query ? '' : '', place: p.place, online: p.online, source: 'manuel'
+        locationText: '', place: p.place, online: p.online, source: 'manuel', query: p.query || ''
       };
       state.items.push(item);
       return { item: item, query: p.query };
@@ -405,16 +497,21 @@
       toast(msg + '. Indiquez votre point de départ pour trouver les lieux proches.');
       return;
     }
-    toast(msg + '. Recherche des lieux les plus proches…');
+    toast(msg + '. Recherche des lieux sur votre trajet…');
+    var found = [];
     toFind.reduce(function (p, c) {
       return p.then(function () {
-        return geocodeNearest(c.query).then(function (pl) {
+        return geocodeNearest(c.query, c.item.date).then(function (pl) {
           var it = byId(c.item.id); if (!it) return;
-          if (pl) it.place = pl; else it.locationText = c.query;
+          if (pl) { it.place = pl; found.push(pl); } else it.locationText = c.query;
           save(); render();
         }).catch(function () { var it = byId(c.item.id); if (it) { it.locationText = c.query; save(); } });
       });
-    }, Promise.resolve()).then(function () { render(); toast('Lieux trouvés et trajets calculés.'); });
+    }, Promise.resolve()).then(function () {
+      render();
+      if (found.length === 1) onRouteToast(found[0]);
+      else toast(found.length + ' lieux trouvés sur votre trajet, trajets calculés.');
+    });
   });
 
   // ================= Navigation =================
@@ -477,7 +574,9 @@
     var fixed = isFixed(it);
     var where = it.online ? 'Sans déplacement' : (it.place ? it.place.name : (it.locationText || 'Lieu à préciser'));
     var meta = where + ' · ' + dur(+it.duration || 30) + (it.deadline && !fixed ? ' · avant ' + it.deadline : '') +
-      (it.source && it.source !== 'manuel' ? ' · via ' + it.source : '');
+      (it.source && it.source !== 'manuel' && it.source !== 'exemple' ? ' · via ' + it.source : '');
+    var detourNote = it.place && it.place.detour != null && !it.done
+      ? el('p', { class: 'onroute', text: it.place.detour <= 2 ? 'Pile sur votre trajet' : 'Sur votre trajet · +' + it.place.detour + ' min de détour' }) : null;
 
     var badges = el('div', { class: 'badges' },
       it.priority === 'haute' ? el('span', { class: 'badge hot', text: 'Urgent' }) : null,
@@ -500,6 +599,8 @@
     var card = el('article', { class: 'card' + (it.done ? ' done' : '') + (it.priority === 'haute' && !it.done ? ' hot' : '') },
       el('div', { class: 'head' }, el('h3', { class: 'title', text: it.title }), badges),
       el('p', { class: 'meta', text: meta }),
+      detourNote,
+      it.done ? null : packBox(it, d),
       btns);
     var swipe = el('div', { class: 'swipe' },
       el('div', { class: 'swipe-bg', 'aria-hidden': 'true' },
@@ -511,12 +612,51 @@
     var travelText = null;
     if (o.travel && !o.past) {
       travelText = el('p', { class: 'travel' + (o.late ? ' late' : '') },
-        (o.late ? 'Attention, risque de retard · ' : '') + '≈ ' + dur(o.travel) + ' ' + MODE_LABEL[state.settings.mode] +
-        (fixed && o.leaveAt ? ' · partir à ' + fmt(o.leaveAt) : ''));
+        (o.late ? (o.lateBy ? 'Retard prévu : ' + o.lateBy + ' min · ' : 'Ce sera juste · ') : '') + '≈ ' + dur(o.travel) + ' ' + MODE_LABEL[state.settings.mode] +
+        (fixed && o.leaveAt ? ' · partir à ' + fmt(o.leaveAt) : '') +
+        (o.margin ? ' (' + o.margin + ' min d\'avance : ' + o.marginWhy + ')' : ''));
     }
     return el('div', { class: 'row' },
       el('div', { class: 'time' }, fmt(o.start), el('small', { text: fmt(o.end) })),
       el('div', { class: 'col' }, travelText, swipe));
+  }
+
+  // Liste « À prendre » repliable sur chaque carte
+  function packBox(it, d) {
+    var list = packList(it);
+    var src = byId(it.id);
+    if (!src) return null;
+    var checked = packChecked(src, d);
+    var nOk = list.filter(function (x) { return checked[x]; }).length;
+    var box = el('details', { class: 'pack' + (list.length && nOk === list.length ? ' ok' : '') },
+      el('summary', null, list.length ? 'À prendre · ' + nOk + '/' + list.length : '+ Liste « à prendre »'));
+    if (packOpen[it.id + d]) box.open = true;
+    box.addEventListener('toggle', function () { packOpen[it.id + d] = box.open; });
+    var ul = el('ul', null);
+    list.forEach(function (label) {
+      var cb = el('input', { type: 'checkbox' });
+      cb.checked = !!checked[label];
+      cb.addEventListener('change', function () {
+        src.packDone = src.packDone || {};
+        src.packDone[d] = src.packDone[d] || {};
+        if (cb.checked) src.packDone[d][label] = true; else delete src.packDone[d][label];
+        if (cb.checked) buzz(8);
+        save(); render();
+      });
+      ul.appendChild(el('li', null, el('label', null, cb, ' ' + label),
+        el('button', { type: 'button', class: 'x', 'aria-label': 'Retirer ' + label, onclick: function () {
+          src.pack = packList(src).filter(function (x) { return x !== label; }); save(); render();
+        } }, '×')));
+    });
+    box.appendChild(ul);
+    var add = el('input', { type: 'text', placeholder: 'Ajouter (ex. clés, parapluie)', 'aria-label': 'Ajouter un objet à prendre' });
+    var form = el('form', { class: 'packadd', onsubmit: function (e) {
+      e.preventDefault();
+      var v = add.value.trim(); if (!v) return;
+      src.pack = packList(src).concat([v]); save(); render();
+    } }, add, el('button', { type: 'submit', class: 'btn' }, 'Ajouter'));
+    box.appendChild(form);
+    return box;
   }
 
   function markDone(id, d) {
@@ -533,7 +673,7 @@
   function makeSwipe(wrap, card, onRight, onLeft) {
     var x0 = null, y0 = 0, dx = 0, dragging = false, pid = null, LIMIT = 90;
     card.addEventListener('pointerdown', function (e) {
-      if (e.button > 0 || e.target.closest('a,button,input,select,textarea,summary')) return;
+      if (e.button > 0 || e.target.closest('a,button,input,select,textarea,summary,label,form,details[open]')) return;
       x0 = e.clientX; y0 = e.clientY; dx = 0; dragging = false; pid = e.pointerId;
     });
     card.addEventListener('pointermove', function (e) {
@@ -568,6 +708,67 @@
     card.addEventListener('pointercancel', end);
   }
 
+  // ================= Détecteur de journées impossibles =================
+  // Déplace une occurrence dans une copie des données (pour simuler)
+  function moveInItems(items, id, from, to) {
+    var it = items.filter(function (x) { return x.id === id; })[0]; if (!it) return;
+    if (it.repeat === 'none') it.date = to;
+    else { it.skip.push(from); items.push(Object.assign({}, it, { id: id + '-sim', repeat: 'none', skip: [], doneDates: {}, date: to })); }
+  }
+  function buildFixes(d, plan) {
+    var fixes = [];
+    var n0 = plan.leftover.length;
+    var placed = plan.out.filter(function (o) { return !isFixed(o.item) && !o.item.done && !o.past; }).map(function (o) { return o.item; });
+    // 1. Raccourcir une tâche longue
+    placed.concat(plan.leftover).filter(function (t) { return (+t.duration || 0) >= 40 && t.priority !== 'haute'; }).forEach(function (t) {
+      var nd = Math.max(15, Math.round(t.duration * 0.6 / 5) * 5);
+      var p = simulate(d, function (items) { items.forEach(function (x) { if (x.id === t.id) x.duration = nd; }); });
+      if (p.leftover.length < n0) fixes.push({ score: n0 - p.leftover.length, plan: p, label: 'Raccourcir « ' + t.title + ' » à ' + dur(nd),
+        apply: function () { moveOccurrence(t.id, d, { duration: nd }); } });
+    });
+    // 2. Reporter une tâche secondaire pour faire passer une tâche urgente ou avec heure limite
+    var important = plan.leftover.filter(function (t) { return t.priority === 'haute' || t.deadline; });
+    if (important.length) placed.filter(function (t) { return t.priority !== 'haute' && !t.deadline; }).forEach(function (t) {
+      var p = simulate(d, function (items) { moveInItems(items, t.id, d, addDays(d, 1)); });
+      var ok = important.filter(function (i) { return !p.leftover.some(function (x) { return x.id === i.id; }); });
+      if (ok.length) fixes.push({ score: ok.length + 0.5, plan: p, label: 'Reporter « ' + t.title + ' » à demain pour faire « ' + ok[0].title + ' » aujourd\'hui',
+        apply: function () { moveOccurrence(t.id, d, { date: addDays(d, 1) }); } });
+    });
+    // 3. Reporter ce qui ne rentre pas au prochain jour qui a de la place
+    for (var k = 1; k <= 7; k++) {
+      var day = addDays(d, k);
+      var ids = plan.leftover.map(function (t) { return t.id; });
+      var pDay = simulate(day, function (items) { ids.forEach(function (id) { moveInItems(items, id, d, day); }); });
+      var fits = !pDay.leftover.some(function (x) { return ids.indexOf(x.id.replace('-sim', '')) >= 0; });
+      if (fits) {
+        var what = n0 > 1 ? 'les ' + n0 + ' tâches en trop' : '« ' + plan.leftover[0].title + ' »';
+        var target = day;
+        fixes.push({ score: 0.2, plan: null, label: 'Reporter ' + what + ' à ' + (k === 1 ? 'demain' : frDate(day, { weekday: 'long', day: 'numeric' })),
+          apply: function () { plan.leftover.forEach(function (t) { moveOccurrence(t.id, d, { date: target }); }); } });
+        break;
+      }
+    }
+    fixes.sort(function (a, b) { return b.score - a.score; });
+    return fixes.slice(0, 3);
+  }
+  function renderOverload(plan) {
+    var box = $('#overload'); box.innerHTML = '';
+    box.hidden = !plan.leftover.length;
+    if (!plan.leftover.length) return;
+    var d = currentDate;
+    box.appendChild(el('div', { class: 'ov-head' },
+      el('span', { class: 'ov-badge', text: 'Trop chargée' }),
+      el('h2', { text: 'Il manque environ ' + dur(Math.ceil(plan.missing / 5) * 5) + ' pour tout faire' })));
+    box.appendChild(el('p', { class: 'hint', text: 'Ne rentre pas : ' + plan.leftover.map(function (t) { return t.title; }).join(', ') + '. Choisissez un compromis :' }));
+    buildFixes(d, plan).forEach(function (f) {
+      var result = !f.plan ? 'Tout trouve sa place' : (f.plan.leftover.length ? 'Il manquera encore ' + dur(Math.ceil(f.plan.missing / 5) * 5) : 'Journée faisable');
+      box.appendChild(el('button', { type: 'button', class: 'fix', onclick: function () {
+        withUndo('Compromis appliqué', function () { f.apply(); save(); render(); });
+        buzz(20);
+      } }, el('span', { text: f.label }), el('small', { class: f.plan && f.plan.leftover.length ? '' : 'good', text: result })));
+    });
+  }
+
   function renderNextUp(plan) {
     var box = $('#nextUp'); box.innerHTML = ''; box.hidden = true;
     if (currentDate !== today()) return;
@@ -583,6 +784,9 @@
       el('small', { text: 'Prochaine étape' }),
       el('strong', { text: fmt(next.start) + ' · ' + next.item.title }),
       el('span', { text: when + (next.travel ? ' · ≈ ' + dur(next.travel) + ' de trajet' : '') })));
+    var src = byId(next.item.id);
+    var toTake = src ? packList(src).filter(function (x) { return !packChecked(src, currentDate)[x]; }) : [];
+    if (toTake.length) box.firstChild.appendChild(el('span', { class: 'take', text: 'À prendre : ' + toTake.join(', ') }));
     var acts = el('div', { class: 'acts' });
     if (placeOf(next.item) || (next.item.locationText && !next.item.online)) acts.appendChild(el('a', { href: mapsLink(next.item), target: '_blank', rel: 'noopener' }, 'Y aller'));
     if (late && isFixed(next.item)) acts.appendChild(el('button', { type: 'button', class: 'late-btn', onclick: function () { openSheet(next.item.id, currentDate, 'notify', 'late'); } }, 'Je suis en retard'));
@@ -594,6 +798,8 @@
     var plan = planDay(currentDate);
     var count = occurrences(currentDate).length;
     renderNextUp(plan);
+    renderOverload(plan);
+    $('#sosBtn').hidden = !(currentDate === today() && plan.out.some(function (o) { return !o.past && !o.item.done; }));
 
     var stats = $('#stats'); stats.innerHTML = '';
     if (count) {
@@ -655,7 +861,7 @@
     var o = planDay(d).out.filter(function (x) { return x.item.id === it.id; })[0];
     var n = nowMin(), st = toMin(it.start);
     if (!o || n >= st + (+it.duration || 30)) return 0;
-    var late = n + (o.travel || 0) - st;
+    var late = Math.max(n + (o.travel || 0) - st, o.lateBy || 0);
     return late > 0 ? Math.ceil(late / 5) * 5 : 0;
   }
   // 3 créneaux libres sur les 2 prochaines semaines, à la même heure si possible
@@ -778,6 +984,18 @@
       if (!nd2.value || (nt2 && !nt2.value)) return;
       doMove(it, d, nd2.value, nt2 ? nt2.value : '');
     } }, 'Déplacer'));
+    var q = it.query || (CATS.filter(function (c) { return c.k.some(function (k) { return new RegExp('\\b' + k).test(norm(it.title)); }); })[0] || {}).q;
+    if (!fixed && q && state.settings.home && byId(it.id)) {
+      body.appendChild(el('p', { class: 'sectlabel', text: 'Changer de lieu' }));
+      body.appendChild(el('button', { type: 'button', class: 'btn block', onclick: function (e) {
+        var b = e.currentTarget; b.disabled = true; b.textContent = 'Recherche…';
+        geocodeNearest(q, d).then(function (pl) {
+          var x = byId(it.id);
+          if (pl && x) { x.place = pl; x.query = q; x.locationText = ''; save(); render(); onRouteToast(pl); closeSheet(); }
+          else { b.disabled = false; b.textContent = 'Aucun lieu trouvé sur le trajet'; }
+        }).catch(function () { b.disabled = false; b.textContent = 'Recherche impossible, réessayer'; });
+      } }, 'Trouver un lieu sur mon trajet du jour'));
+    }
   }
 
   function doMove(it, d, nd, nt) {
@@ -886,6 +1104,93 @@
     }
   }
 
+  // ================= SOS Journée =================
+  var sos = { delay: 30, applied: false };
+  function sosResume(delay) { return { date: today(), min: Math.ceil((nowMin() + delay) / 5) * 5 }; }
+  function sosPreview(delay) {
+    var d = today();
+    var before = planDay(d);
+    var old = state.settings.resume;
+    state.settings.resume = sosResume(delay);
+    var after;
+    try { after = planDay(d); } finally { state.settings.resume = old; }
+    var beforeStart = {};
+    before.out.forEach(function (o) { beforeStart[o.item.id] = o.start; });
+    var lines = [];
+    after.out.forEach(function (o) {
+      if (o.past || o.item.done) return;
+      if (isFixed(o.item)) {
+        if (o.lateBy > 0) lines.push({ kind: 'warn', id: o.item.id, text: o.item.title + ' à ' + o.item.start + ' : retard d\'environ ' + o.lateBy + ' min' });
+        else lines.push({ kind: 'keep', text: o.item.title + ' à ' + o.item.start + ' conservé' });
+      } else if (beforeStart[o.item.id] !== undefined && beforeStart[o.item.id] !== o.start) {
+        lines.push({ kind: 'move', text: o.item.title + ' : ' + fmt(beforeStart[o.item.id]) + ' → ' + fmt(o.start) });
+      } else if (beforeStart[o.item.id] === undefined) {
+        lines.push({ kind: 'move', text: o.item.title + ' replacé à ' + fmt(o.start) });
+      }
+    });
+    var newLeft = after.leftover.filter(function (t) { return !before.leftover.some(function (b) { return b.id === t.id; }); });
+    newLeft.forEach(function (t) { lines.push({ kind: 'later', text: t.title + ' reporté à demain' }); });
+    return { lines: lines, newLeft: newLeft, after: after };
+  }
+  function openSOS() {
+    sos = { delay: 30, applied: false, conflicts: [] };
+    renderSOS();
+    var dl = $('#sos');
+    if (!dl.open) { if (dl.showModal) dl.showModal(); else dl.setAttribute('open', ''); }
+    buzz(20);
+  }
+  $('#sosBtn').addEventListener('click', openSOS);
+  $('#sosClose').addEventListener('click', function () { $('#sos').close(); });
+  $('#sos').addEventListener('click', function (e) { if (e.target === this) this.close(); });
+
+  var KIND_ICON = { keep: '✓', move: '↻', later: '→', warn: '!' };
+  function sosLine(l) {
+    return el('li', { class: 'sosline ' + l.kind },
+      el('span', { class: 'ic', 'aria-hidden': 'true', text: KIND_ICON[l.kind] }),
+      el('span', { class: 'tx', text: l.text }),
+      l.kind === 'warn' && sos.applied ? el('button', { type: 'button', class: 'btn warn', onclick: function () {
+        $('#sos').close(); openSheet(l.id, today(), 'notify', 'late');
+      } }, 'Prévenir') : null);
+  }
+  function renderSOS() {
+    var body = $('#sosBody'); body.innerHTML = '';
+    if (sos.applied) {
+      $('#sosTitle').textContent = 'Nouveau plan appliqué';
+      var ul = el('ul', { class: 'soslist' });
+      sos.result.forEach(function (l) { ul.appendChild(sosLine(l)); });
+      body.appendChild(ul);
+      if (sos.result.some(function (l) { return l.kind === 'warn'; })) body.appendChild(el('p', { class: 'hint', text: 'Prévenez les personnes concernées en un tap : le retard est déjà calculé dans le message.' }));
+      body.appendChild(el('button', { type: 'button', class: 'btn primary block', onclick: function () { $('#sos').close(); } }, 'Voir ma journée'));
+      return;
+    }
+    $('#sosTitle').textContent = 'Combien de temps avez-vous perdu ?';
+    var chips = el('div', { class: 'slots five' });
+    [0, 15, 30, 45, 60, 90].forEach(function (m) {
+      chips.appendChild(el('button', { type: 'button', class: 'slot', 'aria-pressed': sos.delay === m ? 'true' : 'false', onclick: function () { sos.delay = m; renderSOS(); } },
+        el('strong', { text: m ? '+' + m : '0' }), el('small', { text: m ? 'min' : 'repartir' })));
+    });
+    body.appendChild(chips);
+    var pv = sosPreview(sos.delay);
+    body.appendChild(el('p', { class: 'sectlabel', text: 'Je reprends à ' + fmt(sosResume(sos.delay).min) + ' · voici le nouveau plan' }));
+    var ul2 = el('ul', { class: 'soslist' });
+    if (!pv.lines.length) ul2.appendChild(el('li', { class: 'hint', text: 'Rien à changer : la suite de la journée tient toujours.' }));
+    pv.lines.forEach(function (l) { ul2.appendChild(sosLine(l)); });
+    body.appendChild(ul2);
+    body.appendChild(el('button', { type: 'button', class: 'btn primary block', onclick: function () {
+      var d = today(), delay = sos.delay;
+      var snap = JSON.stringify(state.items), oldResume = state.settings.resume;
+      state.settings.resume = sosResume(delay);
+      pv.newLeft.forEach(function (t) { moveOccurrence(t.id, d, { date: addDays(d, 1) }); });
+      save(); render();
+      toast('Journée réorganisée', function () {
+        state.items = JSON.parse(snap); state.settings.resume = oldResume; save(); render(); toast('Action annulée');
+      });
+      sos.applied = true; sos.result = pv.lines;
+      buzz(30);
+      renderSOS();
+    } }, 'Appliquer ce nouveau plan'));
+  }
+
   // ================= Vue Semaine =================
   function renderWeek(ws) {
     var box = $('#week'); box.innerHTML = '';
@@ -901,9 +1206,20 @@
         });
         if (occ.length > 4) list.appendChild(el('li', { class: 'wempty', text: '+ ' + (occ.length - 4) + ' autre(s)' }));
         var dt = parseDate(d);
+        // Jauge de charge : vert = ok, orange = chargée, rouge = trop chargée
+        var load = null;
+        if (occ.length && d >= today()) {
+          var p = planDay(d);
+          var avail = toMin(state.settings.dayEnd) - toMin(state.settings.dayStart);
+          var ratio = (p.busy + p.missing) / Math.max(60, avail);
+          var lvl = p.leftover.length ? 'full' : (ratio > 0.8 ? 'busy' : 'ok');
+          load = el('span', { class: 'wload ' + lvl },
+            el('span', { class: 'bar' }, el('span', { class: 'fill', style: 'width:' + Math.min(100, Math.round(ratio * 100)) + '%' })),
+            el('small', { text: lvl === 'full' ? 'Trop chargée' : (lvl === 'busy' ? 'Chargée' : 'Ça passe') }));
+        }
         box.appendChild(el('button', { type: 'button', class: 'wday' + (d === today() ? ' today' : ''), onclick: function () { currentDate = d; setMode('day'); } },
           el('span', { class: 'wdate' }, el('strong', { text: String(dt.getDate()) }), el('span', { text: dt.toLocaleDateString('fr-FR', { weekday: 'short' }) })),
-          list,
+          el('span', { class: 'wmain' }, list, load),
           occ.length ? el('span', { class: 'wcount', text: String(occ.length) }) : null));
       })(addDays(ws, i));
     }
@@ -1174,10 +1490,11 @@
     if (nearestQuery) {
       var it = byId(id);
       if (!state.settings.home) { it.locationText = nearestQuery; save(); render(); return; }
-      toast('Recherche du lieu le plus proche…');
-      geocodeNearest(nearestQuery).then(function (pl) {
+      toast('Recherche du meilleur lieu sur votre trajet…');
+      it.query = nearestQuery;
+      geocodeNearest(nearestQuery, data.date).then(function (pl) {
         var x = byId(id); if (!x) return;
-        if (pl) { x.place = pl; toast('Trouvé : ' + pl.name); } else { x.locationText = nearestQuery; toast('Aucun lieu trouvé tout près. Précisez-le si besoin.'); }
+        if (pl) { x.place = pl; onRouteToast(pl); } else { x.locationText = nearestQuery; toast('Aucun lieu trouvé tout près. Précisez-le si besoin.'); }
         save(); render();
       }).catch(function () { var x = byId(id); if (x) { x.locationText = nearestQuery; save(); render(); } });
     }
@@ -1228,6 +1545,8 @@
     $('#homeLabel').textContent = s.home ? 'Départ : ' + s.home.label : 'Aucune adresse enregistrée.';
     $('#sMode').value = s.mode; $('#sStart').value = s.dayStart; $('#sEnd').value = s.dayEnd; $('#sBuffer').value = s.buffer;
     $('#sName').value = s.name || '';
+    $('#sMargins').checked = s.smartMargins !== false;
+    $('#backupInfo').textContent = s.lastBackup ? 'Dernière sauvegarde : ' + frDate(s.lastBackup, { day: 'numeric', month: 'long', year: 'numeric' }) + '.' : 'Aucune sauvegarde pour l\'instant.';
     var fl = $('#favList'); fl.innerHTML = '';
     if (!state.favorites.length) fl.appendChild(el('p', { class: 'hint', text: 'Aucun lieu favori. Choisissez un lieu dans « Ajouter », puis « Ajouter aux favoris ».' }));
     state.favorites.forEach(function (f) {
@@ -1255,6 +1574,46 @@
   [['#sMode', 'mode'], ['#sStart', 'dayStart'], ['#sEnd', 'dayEnd'], ['#sBuffer', 'buffer'], ['#sName', 'name']].forEach(function (p) {
     $(p[0]).addEventListener('change', function () { state.settings[p[1]] = p[1] === 'buffer' ? (+this.value || 0) : this.value.trim(); save(); render(); });
   });
+  $('#sMargins').addEventListener('change', function () { state.settings.smartMargins = this.checked; save(); render(); });
+
+  // ================= Sauvegarde / restauration =================
+  $('#backupBtn').addEventListener('click', function () {
+    state.settings.lastBackup = today(); save();
+    var data = { app: 'ma-journee', version: 1, savedAt: new Date().toISOString(), state: state };
+    var blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
+    var a = el('a', { href: URL.createObjectURL(blob), download: 'ma-journee-sauvegarde-' + today() + '.json' });
+    document.body.appendChild(a); a.click(); a.remove();
+    renderSettings();
+    toast('Sauvegarde créée. Gardez ce fichier en lieu sûr (il contient vos rendez-vous).');
+  });
+  var pendingRestore = null;
+  $('#restoreFile').addEventListener('change', function () {
+    var file = this.files && this.files[0]; if (!file) return;
+    var input = this;
+    var reader = new FileReader();
+    reader.onload = function () {
+      input.value = '';
+      var data;
+      try { data = JSON.parse(String(reader.result)); } catch (e) { data = null; }
+      var s = data && data.app === 'ma-journee' && data.state;
+      if (!s || !Array.isArray(s.items)) { toast('Ce fichier n\'est pas une sauvegarde de Ma Journée.'); return; }
+      pendingRestore = s;
+      $('#restoreText').textContent = 'Sauvegarde du ' + new Date(data.savedAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) +
+        ' : ' + s.items.length + ' rendez-vous et tâches, ' + (s.favorites || []).length + ' lieux favoris. Elle remplacera vos données actuelles.';
+      $('#restoreConfirm').hidden = false;
+    };
+    reader.readAsText(file);
+  });
+  $('#restoreNo').addEventListener('click', function () { pendingRestore = null; $('#restoreConfirm').hidden = true; });
+  $('#restoreYes').addEventListener('click', function () {
+    if (!pendingRestore) return;
+    try { localStorage.setItem(KEY, JSON.stringify(pendingRestore)); } catch (e) { /* ignore */ }
+    state = load();
+    pendingRestore = null; $('#restoreConfirm').hidden = true;
+    renderSettings(); render(); toast('Données restaurées');
+  });
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* stockage persistant non disponible */ }
+
   $('#wipeBtn').addEventListener('click', function () { $('#wipeConfirm').hidden = false; });
   $('#wipeNo').addEventListener('click', function () { $('#wipeConfirm').hidden = true; });
   $('#wipeYes').addEventListener('click', function () {
@@ -1291,7 +1650,9 @@
       var key = o.item.id + d + o.start;
       if (n >= leave - 5 && n < o.start && !notified[key]) {
         notified[key] = true;
-        var msg = o.item.title + ' à ' + fmt(o.start) + ' · ≈ ' + dur(o.travel) + ' de trajet';
+        var src = byId(o.item.id);
+        var take = src ? packList(src).filter(function (x) { return !packChecked(src, d)[x]; }) : [];
+        var msg = o.item.title + ' à ' + fmt(o.start) + ' · ≈ ' + dur(o.travel) + ' de trajet' + (take.length ? '. N\'oubliez pas : ' + take.join(', ') : '');
         toast('Il est temps de partir : ' + msg);
         if (state.settings.notify && 'Notification' in window && Notification.permission === 'granted') notify('Il est temps de partir', msg);
       }
