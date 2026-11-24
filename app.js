@@ -43,7 +43,7 @@
   function today() { return dateStr(new Date()); }
   function nowMin() { var n = new Date(); return n.getHours() * 60 + n.getMinutes(); }
   function toMin(t) { if (!t) return 0; var p = t.split(':'); return (+p[0]) * 60 + (+p[1]); }
-  function fmt(m) { m = Math.round(m); return pad(Math.floor(m / 60) % 24) + ':' + pad(m % 60); }
+  function fmt(m) { m = ((Math.round(m) % 1440) + 1440) % 1440; return pad(Math.floor(m / 60) % 24) + ':' + pad(m % 60); }
   function dur(m) { return m >= 60 ? Math.floor(m / 60) + ' h' + (m % 60 ? ' ' + pad(m % 60) : '') : m + ' min'; }
   function norm(s) { return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
   function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
@@ -510,6 +510,13 @@
       if (out.some(function (o) { return km(o, p) < 0.03 && norm(o.name) === norm(p.name); })) return;
       out.push(p);
     });
+    // Ce qui est près de chez toi d'abord (le « Café de Flore » de Paris avant celui d'Ajaccio)
+    var h = state.settings.home;
+    if (h) {
+      var bucket = function (p) { var d = km(h, p); return d < 40 ? 0 : (d < 150 ? 1 : 2); };
+      out = out.map(function (p, i) { return { p: p, i: i, b: bucket(p) }; })
+        .sort(function (a, b) { return a.b - b.b || a.i - b.i; }).map(function (x) { return x.p; });
+    }
     return out.slice(0, 8);
   }
   function setupSearch(input, btn, results, onPick) {
@@ -636,7 +643,11 @@
       var it = { fixed: false, start: '', deadline: '', duration: 0, priority: 'normale', repeat: 'none', date: currentDate, online: false, place: null, locationText: '', query: '' };
       var t = ' ' + chunk + ' ';
       t = t.replace(/\bavant\s+(\d{1,2})\s*h\s*(\d{2})?/i, function (m, h, mi) { if (+h < 24) { it.deadline = pad(+h) + ':' + (mi || '00'); return ' '; } return m; });
-      t = t.replace(/\s(?:à\s*|a\s+)?(\d{1,2})\s*h\s*(\d{2})?(?=\s)/i, function (m, h, mi) { if (+h < 24) { it.start = pad(+h) + ':' + (mi || '00'); it.fixed = true; return ' '; } return m; });
+      t = t.replace(/\s(?:à\s*|a\s+|vers\s+)?(\d{1,2})\s*h\s*(\d{2})?(?=\s)/i, function (m, h, mi) { if (+h < 24) { it.start = pad(+h) + ':' + (mi || '00'); it.fixed = true; return ' '; } return m; });
+      // « à midi », « midi et demi », « vers minuit »
+      if (!it.start) t = t.replace(/\s(?:à\s+|a\s+|vers\s+|ce\s+)?(midi|minuit)(\s+et\s+demie?|\s+(\d{2}))?(?=\s)/i, function (m, w, half, mi) {
+        it.start = (/midi/i.test(w) ? '12' : '00') + ':' + (half && /demi/i.test(half) ? '30' : (mi || '00')); it.fixed = true; return ' ';
+      });
       t = t.replace(/(?:pendant\s+)?(\d{1,3})\s*(?:min|minutes?)\b/i, function (m, n) { it.duration = +n; return ' '; });
       t = t.replace(/\burgente?s?\b|\bimportante?\b|!/gi, function () { it.priority = 'haute'; return ' '; });
       t = t.replace(/\b(tous les jours|chaque jour)\b/i, function () { it.repeat = 'daily'; return ' '; });
@@ -673,6 +684,13 @@
         });
       }
       if (it.window) it.date = it.window.from;
+      // Un lieu cité : « être à Châtelet », « aller au Louvre », « passer à la gare de Lyon », « rdv chez Darty »
+      var locM = t.match(/\s(?:être|etre|aller|passer|me rendre|direction|rendez-vous|rdv|rejoindre|retrouver\s+\S+)\s+(?:à la|a la|à l'|a l'|au|aux|à|a|chez|devant)\s+(.{2,60}?)\s*$/i);
+      if (locM) {
+        var where = locM[1].trim();
+        // « chez Caro » = chez une personne : pas d'adresse à chercher
+        if (!/^chez$/i.test((locM[0].match(/\b(chez)\b/i) || [])[1] || '') || !/^[A-ZÉÈ][\wéèêàç-]*$/.test(where)) it.locationText = where;
+      }
       t = t.replace(/^\s*(je dois|il faut|faut|penser à|ne pas oublier de)\s+/i, ' ');
       t = t.replace(/\s+(à|a|pour|vers)\s*$/i, ' ').replace(/\s+/g, ' ').trim();
       it.title = cap(t || chunk.trim());
@@ -688,7 +706,15 @@
       if (fav) { it.place = { name: fav.name, label: fav.label, lat: fav.lat, lon: fav.lon }; }
       var cat = CATS.filter(function (c) { return c.k.some(function (k) { return new RegExp('\\b' + k).test(n); }); })[0];
       if (REMOTE.test(n) && !cat) { it.online = true; if (!it.duration) it.duration = 15; }
-      if (cat) { if (!it.duration) it.duration = cat.d; if (!it.place && !it.fixed) it.query = cat.q; }
+      if (cat) { if (!it.duration) it.duration = cat.d; if (!it.place && !it.fixed) it.query = cat.q; if (it.query || it.place) it.locationText = ''; }
+      if (it.place) it.locationText = '';
+      // Voir quelqu'un : durées habituelles
+      if (!it.duration) {
+        if (/\b(dejeuner|dej|dejeune)\b/.test(n) || (it.start === '12:00' && /\b(voir|avec|retrouver)\b/.test(n))) it.duration = 60;
+        else if (/\b(diner|soiree|apero)\b/.test(n)) it.duration = 90;
+        else if (/\b(cafe|verre)\b/.test(n)) it.duration = 30;
+        else if (/\b(voir|retrouver|rencontrer|avec|rdv|rendez-vous|reunion)\b/.test(n)) it.duration = 60;
+      }
       if (!it.duration) it.duration = 30;
       return it;
     });
@@ -704,7 +730,7 @@
         var item = {
           id: uid(), title: p.title, fixed: p.fixed, date: p.date, start: p.start, deadline: p.deadline,
           duration: p.duration, priority: p.priority, repeat: p.repeat, skip: [], doneDates: {},
-          locationText: '', place: p.place, online: p.online, source: 'manuel', query: p.query || ''
+          locationText: p.locationText || '', place: p.place, online: p.online, source: 'manuel', query: p.query || ''
         };
         if (p.window && !p.fixed) {
           item.window = p.window;
@@ -725,14 +751,18 @@
   function commitAdd(plan) {
     plan.created.forEach(function (c) { state.items.push(c.item); });
     save(); render();
+    // Lieux cités par leur nom (« être à Châtelet ») : on cherche leur adresse
+    var named = plan.created.filter(function (c) { return !c.query && c.item.locationText && !c.item.place && !c.item.online; });
+    var namedDone = named.reduce(function (p, c) { return p.then(function () { return findAddress(c.item.id); }); }, Promise.resolve());
     var toFind = plan.created.filter(function (c) { return c.query; });
-    if (!toFind.length) return Promise.resolve({ found: [], noHome: false });
+    if (!toFind.length) return namedDone.then(function () { return { found: [], noHome: false }; });
     if (!state.settings.home) {
       toFind.forEach(function (c) { c.item.locationText = c.query; });
       save(); render();
-      return Promise.resolve({ found: [], noHome: true });
+      return namedDone.then(function () { return { found: [], noHome: true }; });
     }
     var found = [];
+    // d'abord les lieux précis (ils dessinent le trajet), ensuite les commerces « sur le chemin »
     return toFind.reduce(function (p, c) {
       return p.then(function () {
         return geocodeNearest(c.query, c.item.date).then(function (pl) {
@@ -741,7 +771,7 @@
           save(); render();
         }).catch(function () { var it = byId(c.item.id); if (it) { it.locationText = c.query; save(); } });
       });
-    }, Promise.resolve()).then(function () { render(); return { found: found, noHome: false }; });
+    }, namedDone).then(function () { render(); return { found: found, noHome: false }; });
   }
 
   $('#quickForm').addEventListener('submit', function (e) {
@@ -2697,6 +2727,12 @@
     var n = norm(text).replace(/’/g, "'");
     if (/^(salut|bonjour|bonsoir|hello|coucou|hey)\b/.test(n) && n.length < 25) return aiSay('Bonjour ! Dis-moi ce que tu veux organiser : un retard, un rendez-vous annulé, une course à caser, ta semaine…');
     if (/^(merci|super|top|parfait|genial|ok)\b/.test(n) && n.length < 25) return aiSay('Avec plaisir ! Je suis là si ta journée change.');
+    // « Programme ma journée (de demain) à ma place : voir Caro à midi, être à Châtelet à 15h, récupérer mon colis »
+    var prog = text.match(/^\s*(?:est-ce que tu peux |tu peux |peux-tu )?(?:programme|programmer|organise|organiser|planifie|planifier|prepare|préparer|prépare|fais|faire|remplis|remplir|prevois|prévois)(?:-moi| moi)?\s+(?:toute\s+)?(?:ma|la)\s+(?:journ[ée]e|semaine)\b([^:,.\-–]*)[:,.\-–]\s*(.+)$/i);
+    if (prog && prog[2] && prog[2].trim().length > 2) {
+      var whenPart = prog[1].replace(/(^|\s)(à ma place|a ma place|pour moi|stp|s'il te pla[iî]t)(?=\s|$)/gi, ' ').replace(/(^|\s)de(?=\s|$)/gi, ' ').trim();
+      return aiAdd(whenPart + ' ' + prog[2], norm(whenPart + ' ' + prog[2]), true);
+    }
     if (/\b(mails?|e-mails?|emails?|boite (de reception|mail)|courriels?)\b/.test(n)) return aiEmails();
     if (/\b(reserve|reserver|reservation|booker|book)\b/.test(n) || (/\b(restaurant|resto)\b/.test(n) && /\b(trouve|cherche|envie)\b/.test(n))) return aiBooking(text, n);
     if (/\b(retard|en retard|bloque|bloquee|coince|bouchons?|greve|panne|rate (le|mon) (train|bus|metro|rer))\b/.test(n)) return aiLate(n);
@@ -3045,7 +3081,7 @@
     return m;
   }
 
-  function aiAdd(text, n) {
+  function aiAdd(text, n, wholeDay) {
     var cleaned = text.replace(/^\s*(?:est-ce que tu peux|tu peux|peux-tu|merci de|stp|s'il te plait)\s+/i, '')
       .replace(/^\s*(?:ajoute(?:r)?|rajoute(?:r)?|mets|mettre|met|prevois|prévois|note|planifie|programme|rappelle-moi de|rappelle moi de|il faut que je|je dois|je veux|j'aimerais|trouve(?:-moi)?|cherche(?:-moi)?)\s+/i, '')
       .replace(/\b(?:sur mon (?:trajet|chemin)|sur le chemin|pres de chez moi|à côté|a cote)\b/gi, ' ')
@@ -3059,7 +3095,7 @@
         pa = planAdd(cleaned.replace(/\b(aujourd'hui|ce soir|ce matin|après-demain|apres-demain|demain|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)(\s+prochain)?\b/gi, ' '));
       } finally { currentDate = saveDate; viewMode = saveMode; }
     } else pa = planAdd(cleaned);
-    var recognized = pa.created.some(function (c) { return c.query || c.item.fixed || c.item.window || c.item.place || c.item.online; }) ||
+    var recognized = wholeDay || pa.created.some(function (c) { return c.query || c.item.fixed || c.item.window || c.item.place || c.item.online || c.item.locationText; }) ||
       /^(ajoute|rajoute|mets|prevois|note|planifie|programme|rappelle|il faut|je dois|trouve|cherche)/.test(n) || aiDays(n).length;
     if (!pa.created.length || !recognized) {
       return aiSay('Je n\'ai pas bien compris. Voici ce que je sais faire :', { status: 'done', summary: 'Aide affichée.',
@@ -3074,18 +3110,56 @@
     var lines = pa.created.map(function (c) {
       var it = c.item;
       return { kind: 'keep', text: it.title + ' · ' + aiDayName(it.date) + (it.start ? ' à ' + it.start : '') + (it.repeat !== 'none' ? ' (' + REPEAT_LABEL[it.repeat].toLowerCase() + ')' : '') +
-        (c.query ? (state.settings.home ? ' · lieu cherché sur ton trajet' : ' · lieu à préciser') : (it.place ? ' · ' + it.place.name : '')) };
+        (c.query ? (state.settings.home ? ' · lieu cherché sur ton trajet' : ' · lieu à préciser') :
+          (it.place ? ' · ' + (norm(it.place.name) === 'sport' ? 'Salle de sport' : it.place.name) :
+            (it.locationText ? ' · ' + it.locationText + ' (je cherche l\'adresse)' : (it.online ? ' · sans déplacement' : ' · lieu à préciser')))) };
     });
-    aiSay('Je vais ajouter :', {
-      lines: lines, confirm: 'Ajouter',
+    var dayOf = pa.created[0] ? pa.created[0].item.date : today();
+    aiSay(wholeDay ? 'D\'accord, je programme ' + aiDayName(dayOf) + ' à ta place. Voici ce que j\'ai compris :' : 'Je vais ajouter :', {
+      lines: lines, confirm: wholeDay ? 'Programmer ma journée' : 'Ajouter',
       run: function () {
         var snapIds = pa.created.map(function (c) { return c.item.id; });
         return commitAdd(pa).then(function (r) {
           toast(snapIds.length + ' élément(s) ajouté(s)', function () { state.items = state.items.filter(function (i) { return snapIds.indexOf(i.id) < 0; }); save(); render(); toast('Action annulée'); });
-          var txt = 'C\'est ajouté et organisé.';
-          if (r.found.length) txt += ' ' + r.found.map(function (p) { return p.name + (p.detour ? ' (+' + p.detour + ' min de détour)' : ' (sur ton trajet)'); }).join(', ') + '.';
+          var after = [];
+          var txt = wholeDay ? 'C\'est programmé. Voici ta journée, dans le meilleur ordre :' : 'C\'est ajouté et organisé.';
+          if (!wholeDay && r.found.length) txt += ' ' + r.found.map(function (p) { return p.name + (p.detour ? ' (+' + p.detour + ' min de détour)' : ' (sur ton trajet)'); }).join(', ') + '.';
           if (r.noHome) txt += ' Indique ton point de départ dans Réglages pour que je trouve les lieux.';
-          return { text: txt, after: [aiBtn('Voir la journée', function () { $('#ai').close(); currentDate = pa.created[0].item.date; go('day'); setMode('day'); }, 'block')] };
+          if (wholeDay) {
+            // la journée obtenue, étape par étape, avec les départs
+            var p = planDay(dayOf);
+            var dl = p.out.filter(function (o) { return !o.past; }).map(function (o) {
+              var it = o.item, pl = placeOf(it);
+              var where = pl ? (norm(pl.name) === 'sport' ? 'Salle de sport' : pl.name) : (it.online ? '' : 'lieu à préciser');
+              return { kind: isFixed(it) ? 'keep' : 'move', text: fmt(o.start) + ' · ' + it.title + (where ? ' (' + where + ')' : '') +
+                (o.travel ? ' · partir à ' + fmt(o.leaveAt || (o.start - o.travel)) : '') + (pl && pl.detour != null ? (pl.detour <= 2 ? ' · sur ton trajet' : ' · +' + pl.detour + ' min de détour') : '') };
+            });
+            if (p.leftover.length) dl.push({ kind: 'warn', text: 'Ne rentre pas : ' + p.leftover.map(function (t) { return t.title; }).join(', ') });
+            after.push(aiLines(dl));
+          }
+          // Une étape sans lieu (« voir Caro », un colis dont le point relais n'a pas été trouvé) : on demande où, en un geste
+          pa.created.forEach(function (c) {
+            var it = byId(c.item.id);
+            if (!it || it.place || it.online) return;
+            var lowTitle = it.title.charAt(0).toLowerCase() + it.title.slice(1);
+            var who = (lowTitle.match(/(?:^|\s)(?:voir|retrouver|rejoindre|déjeuner avec|dejeuner avec|dîner avec|diner avec|avec)\s+([A-ZÉÈ][\wéèêàç-]+)/) || [])[1];
+            var q = who ? 'Où vois-tu ' + who + (it.start ? ' à ' + it.start : '') + ' ?' :
+              (/colis|relais/i.test(it.title) ? 'Où récupères-tu ton colis ? (point relais, bureau de poste…)' : 'Où a lieu « ' + it.title + ' » ?');
+            after.push(el('div', { class: 'ai-opt' },
+              el('strong', { text: q }),
+              el('small', { text: 'Un restaurant, une adresse, un commerce… Je calcule le trajet et l\'heure de départ.' }),
+              onbSearch('Lieu, adresse, restaurant…', function (pl) {
+                var x = byId(it.id); if (!x) return;
+                x.place = pl; x.locationText = ''; save(); render();
+                var o = planDay(x.date).out.filter(function (q) { return q.item.id === x.id; })[0];
+                var far = state.settings.home && km(state.settings.home, pl) > 150;
+                aiSay('Noté : ' + x.title + (x.start ? ' à ' + x.start : '') + ', ' + pl.name + '.' +
+                  (far ? ' Attention, ce lieu est à plus de 150 km de chez toi : vérifie que c\'est le bon.' :
+                    (o && o.travel ? ' Pars à ' + fmt(o.leaveAt || (o.start - o.travel)) + ' (' + dur(o.travel) + ' de trajet).' : ' Ta journée est réorganisée.')));
+              })));
+          });
+          after.push(aiBtn('Voir la journée', function () { $('#ai').close(); currentDate = dayOf; go('day'); setMode('day'); }, 'block'));
+          return { text: txt, after: after };
         });
       }
     });
