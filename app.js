@@ -21,6 +21,8 @@
     if (!s || !Array.isArray(s.items)) s = { items: [] };
     s.settings = Object.assign({}, DEFAULTS, s.settings || {});
     s.favorites = Array.isArray(s.favorites) ? s.favorites : [];
+    s.people = Array.isArray(s.people) ? s.people : [];
+    s.recentPlaces = Array.isArray(s.recentPlaces) ? s.recentPlaces : [];
     s.items.forEach(function (i) { // migration de l'ancienne version
       if (!i.doneDates) { i.doneDates = {}; if (i.done) i.doneDates[i.date] = true; }
       delete i.done;
@@ -268,6 +270,8 @@
           var tt = travel(pos, tp);
           var arrive = cur + tt + (tt ? buffer : 0);
           var wait = 0;
+          // Une course dont on ne connaît pas encore le lieu : pas avant 9 h (les commerces ouvrent rarement plus tôt)
+          if ((!tp || (t.query && !tp.hours)) && !t.online && arrive < 9 * 60) { wait = 9 * 60 - arrive; arrive = 9 * 60; }
           if (tp && tp.hours) { // attendre l'ouverture si besoin, ou passer si c'est fermé
             var op = openFrom(tp, date, arrive, +t.duration || 15);
             if (op === -1) return;
@@ -458,10 +462,15 @@
       list.forEach(function (c) { delete c._d; });
       return pick;
     }
-    return nominatim('limit=40&bounded=1&q=' + encodeURIComponent(q) + box).then(function (l) {
-      if (l.length) return best(l);
-      return nominatim('limit=20&bounded=1&q=' + encodeURIComponent(q) + viewbox(h, 0.1, 0.07)).then(best);
-    });
+    // Les points relais ont des noms variés dans OpenStreetMap : on essaie plusieurs façons de les chercher
+    var tries = q === 'point relais' ? ['point relais', 'relais colis', 'mondial relay', 'pickup', 'consigne colis'] : [q];
+    var i = 0;
+    function next() {
+      var qq = tries[i++];
+      if (!qq) return nominatim('limit=20&bounded=1&q=' + encodeURIComponent(tries[0]) + viewbox(h, 0.1, 0.07)).then(best);
+      return nominatim('limit=40&bounded=1&q=' + encodeURIComponent(qq) + box).then(function (l) { return l.length ? best(l) : next(); });
+    }
+    return next();
   }
   function onRouteToast(pl) {
     if (!pl) return;
@@ -533,24 +542,39 @@
         var dist = h ? ' · ' + (km(h, p) < 1 ? Math.round(km(h, p) * 1000) + ' m' : km(h, p).toFixed(1).replace('.', ',') + ' km') : '';
         results.appendChild(el('button', { type: 'button', class: 'result', onclick: function () {
           results.innerHTML = ''; clearTimeout(timer); seq++;
-          var clean = Object.assign({}, p); delete clean.kind; delete clean._d;
+          var clean = Object.assign({}, p); delete clean.kind; delete clean._d; delete clean.at;
+          rememberPlace(clean);
           onPick(clean);
-        } }, el('span', { class: 'rtag', text: p.kind || 'Lieu' }), el('strong', { text: p.name }), el('small', { text: p.label + dist })));
+        } }, el('span', { class: 'rtag', text: p.kind || 'Lieu' }), el('strong', { text: p.name }), el('small', { text: (p.label || '') + dist })));
       });
-      if (!full) results.appendChild(hint('Pas dans la liste ? Appuie sur « Chercher » pour chercher aussi les commerces et lieux publics.'));
+      if (!full && list.some(function (p) { return p.kind !== 'Récent'; })) results.appendChild(hint('Pas dans la liste ? Appuie sur « Chercher » pour chercher aussi les commerces et lieux publics.'));
+    }
+    function recents(q) {
+      var nq = norm(q || '');
+      return state.recentPlaces.filter(function (r) { return !nq || norm(r.name + ' ' + r.label).indexOf(nq) >= 0; })
+        .slice(0, nq ? 3 : 5).map(function (r) { return Object.assign({}, r, { kind: nq ? 'Déjà utilisé' : 'Récent' }); });
     }
     function suggest(full) {
       var q = input.value.trim();
-      if (q.length < 3) { if (full) input.focus(); results.innerHTML = ''; return; }
+      if (q.length < 3) {
+        if (full) input.focus();
+        var rc = recents(q);
+        if (rc.length && !full) show(rc, false); else results.innerHTML = '';
+        return;
+      }
       var my = ++seq;
       if (full) { results.innerHTML = ''; results.appendChild(hint('Recherche en cours…')); }
       var jobs = [companySearch(q), addressSearch(q)];
       if (full) jobs.push(geocode(q).then(function (l) { return l.map(function (x) { return Object.assign(x, { kind: 'Lieu' }); }); }).catch(function () { return []; }));
       Promise.all(jobs).then(function (r) {
         if (my !== seq) return; // une recherche plus récente a été lancée
-        show(mergeResults(q, r[0], r[1], r[2] || []), full);
+        var rc = recents(q);
+        var merged = mergeResults(q, r[0], r[1], r[2] || []).filter(function (p) { return !rc.some(function (x) { return km(x, p) < 0.05; }); });
+        show(rc.concat(merged).slice(0, 8), full);
       });
     }
+    // Lieux récents dès qu'on touche le champ vide
+    input.addEventListener('focus', function () { if (!input.value.trim()) { var rc = recents(''); if (rc.length) show(rc, false); } });
     input.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(function () { suggest(false); }, 350); });
     btn.addEventListener('click', function () { clearTimeout(timer); suggest(true); });
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); suggest(true); } });
@@ -708,6 +732,13 @@
       if (REMOTE.test(n) && !cat) { it.online = true; if (!it.duration) it.duration = 15; }
       if (cat) { if (!it.duration) it.duration = cat.d; if (!it.place && !it.fixed) it.query = cat.q; if (it.query || it.place) it.locationText = ''; }
       if (it.place) it.locationText = '';
+      // Un proche cité : on reprend son lieu habituel (s'il est connu) et son numéro pour le prévenir
+      var who = personIn(chunk.trim());
+      if (who) {
+        it.person = cap(who);
+        var per = findPerson(who);
+        if (per && per.place && !it.place && !it.locationText && !it.query && !it.online) it.place = Object.assign({}, per.place);
+      }
       // Voir quelqu'un : durées habituelles
       if (!it.duration) {
         if (/\b(dejeuner|dej|dejeune)\b/.test(n) || (it.start === '12:00' && /\b(voir|avec|retrouver)\b/.test(n))) it.duration = 60;
@@ -730,7 +761,7 @@
         var item = {
           id: uid(), title: p.title, fixed: p.fixed, date: p.date, start: p.start, deadline: p.deadline,
           duration: p.duration, priority: p.priority, repeat: p.repeat, skip: [], doneDates: {},
-          locationText: p.locationText || '', place: p.place, online: p.online, source: 'manuel', query: p.query || ''
+          locationText: p.locationText || '', place: p.place, online: p.online, source: 'manuel', query: p.query || '', person: p.person || ''
         };
         if (p.window && !p.fixed) {
           item.window = p.window;
@@ -873,6 +904,12 @@
     var detourNote = it.place && it.place.detour != null && !it.done
       ? el('p', { class: 'onroute', text: it.place.detour <= 2 ? 'Pile sur votre trajet' : 'Sur votre trajet · +' + it.place.detour + ' min de détour' }) : null;
     // Horaires d'ouverture connus : ouvert jusqu'à quand, ou alerte si fermé
+    // Météo au moment de partir
+    var wxNote = null;
+    if (o.travel && !o.past && !it.done && !it.online) {
+      var wl = wxAt(d, o.leaveAt || (o.start - o.travel));
+      if (isWet(wl)) wxNote = el('p', { class: 'wxnote', text: wxLabel(wl.c) + ' au départ (' + wl.p + ' %) : prends un parapluie' + (state.settings.mode === 'bicycling' ? ', ou les transports plutôt que le vélo' : '') });
+    }
     var hoursNote = null;
     if (placeOf(it) && it.place.hours && !it.done && !o.past) {
       var until = openUntil(it.place, d, o.start);
@@ -903,6 +940,7 @@
       el('p', { class: 'meta', text: meta }),
       detourNote,
       hoursNote,
+      wxNote,
       it.done ? null : packBox(it, d),
       btns);
     var swipe = el('div', { class: 'swipe' },
@@ -1095,6 +1133,7 @@
       el('span', { text: when + (next.travel ? ' · ≈ ' + dur(next.travel) + ' de trajet' : '') })));
     var src = byId(next.item.id);
     var toTake = src ? packList(src).filter(function (x) { return !packChecked(src, currentDate)[x]; }) : [];
+    if (next.travel && isWet(wxAt(currentDate, leave))) toTake.push('Parapluie');
     if (toTake.length) box.firstChild.appendChild(el('span', { class: 'take', text: 'À prendre : ' + toTake.join(', ') }));
     var acts = el('div', { class: 'acts' });
     if (placeOf(next.item) || (next.item.locationText && !next.item.online)) acts.appendChild(el('a', { href: mapsLink(next.item), target: '_blank', rel: 'noopener' }, 'Y aller'));
@@ -1106,6 +1145,7 @@
     $('#homeWarning').hidden = !!state.settings.home;
     var plan = planDay(currentDate);
     var count = occurrences(currentDate).length;
+    renderBrief(plan);
     renderNextUp(plan);
     renderOverload(plan);
     $('#sosBtn').hidden = !(currentDate === today() && plan.out.some(function (o) { return !o.past && !o.item.done; }));
@@ -1230,7 +1270,12 @@
     return x.replace(/^\+/, '').replace(/^00/, '');
   }
   function contactOf(it) {
-    return { phone: it.phone || (it.place && it.place.phone) || '', email: it.email || (it.place && it.place.email) || '' };
+    // un proche passe avant le lieu : pour « voir Caro au café », on prévient Caro, pas le café
+    var per = it.person ? findPerson(it.person) : null;
+    return {
+      phone: it.phone || (per && per.phone) || (it.place && it.place.phone) || '',
+      email: it.email || (per && per.email) || (it.place && it.place.email) || ''
+    };
   }
 
   // ================= Feuille d'actions =================
@@ -1357,6 +1402,7 @@
     }
     function keepContact() {
       sheet.item.phone = ph.value.trim(); sheet.item.email = em.value.trim();
+      if (sheet.item.person) upsertPerson(sheet.item.person, { phone: sheet.item.phone || undefined, email: sheet.item.email || undefined });
       var x = byId(sheet.id); if (!x) return;
       x.phone = sheet.item.phone; x.email = sheet.item.email; save();
     }
@@ -1947,6 +1993,37 @@
   var activePreset = null;
 
   function findFav(name) { return state.favorites.filter(function (f) { return norm(f.name) === norm(name); })[0]; }
+
+  // ================= Mes proches (mémoire des personnes) =================
+  function findPerson(name) { var n = norm(name); return state.people.filter(function (p) { return norm(p.name) === n; })[0]; }
+  function upsertPerson(name, patch) {
+    var p = findPerson(name);
+    if (!p) { p = { id: uid(), name: cap(name.trim()) }; state.people.push(p); }
+    Object.keys(patch || {}).forEach(function (k) { if (patch[k] !== undefined && patch[k] !== '') p[k] = patch[k]; });
+    save();
+    return p;
+  }
+  var NOT_A_NAME = /^(Le|La|Les|L|Mon|Ma|Mes|Ton|Ta|Un|Une|Des|Du|De|Moi|Toi|Lui|Elle|Eux|Nous|Vous|Paris|Lyon|Marseille|Demain|Lundi|Mardi|Mercredi|Jeudi|Vendredi|Samedi|Dimanche)$/;
+  // « voir Caro », « déjeuner avec Sam », « appeler Maman », « préviens Léo »
+  function personIn(text) {
+    var t = ' ' + text.charAt(0).toLowerCase() + text.slice(1);
+    var m = t.match(/\s(?:voir|retrouver|rejoindre|rencontrer|appeler|rappeler|t[ée]l[ée]phoner à|d[ée]jeuner avec|d[îi]ner avec|caf[ée] avec|verre avec|sortir avec|avec|pr[ée]viens|pr[ée]venir|dis à|dire à|[ée]cris à|message à|sms à)\s+([A-ZÉÈÀ][A-Za-zÀ-ÿ-]+)/);
+    if (!m || NOT_A_NAME.test(m[1])) {
+      // un proche déjà connu cité n'importe où (« courses avec Caro »)
+      var known = state.people.filter(function (p) { return new RegExp('(^|[^A-Za-zÀ-ÿ])' + p.name + '([^A-Za-zÀ-ÿ]|$)', 'i').test(text); })[0];
+      return known ? known.name : null;
+    }
+    return m[1];
+  }
+
+  // ================= Lieux déjà utilisés =================
+  function rememberPlace(p) {
+    if (!p || p.lat == null) return;
+    var list = state.recentPlaces.filter(function (r) { return !(norm(r.name) === norm(p.name) && km(r, p) < 0.05); });
+    list.unshift({ name: p.name, label: p.label, lat: p.lat, lon: p.lon, phone: p.phone, hours: p.hours, at: today() });
+    state.recentPlaces = list.slice(0, 15);
+    save();
+  }
   function presetChip(p, onClick, pressable) {
     var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true');
@@ -2203,6 +2280,7 @@
   function renderSettings() {
     var s = state.settings;
     renderPlaces();
+    renderPeople();
     $('#sMode').value = s.mode; $('#sStart').value = s.dayStart; $('#sEnd').value = s.dayEnd; $('#sBuffer').value = s.buffer;
     $('#sName').value = s.name || '';
     $('#sMargins').checked = s.smartMargins !== false;
@@ -2231,7 +2309,7 @@
     return el('span', { class: 'place-ic' }, svg);
   }
   function savePlace(key, p, customName) {
-    if (key === 'home') { state.settings.home = p; }
+    if (key === 'home') { state.settings.home = p; setTimeout(function () { loadWeather(true); }, 50); }
     else {
       var isNew = key === 'new' || key === 'newwork';
       var name = isNew ? customName : (PLACE_SLOTS.some(function (s) { return s.key === key; }) ? key : null);
@@ -2727,6 +2805,9 @@
     var n = norm(text).replace(/’/g, "'");
     if (/^(salut|bonjour|bonsoir|hello|coucou|hey)\b/.test(n) && n.length < 25) return aiSay('Bonjour ! Dis-moi ce que tu veux organiser : un retard, un rendez-vous annulé, une course à caser, ta semaine…');
     if (/^(merci|super|top|parfait|genial|ok)\b/.test(n) && n.length < 25) return aiSay('Avec plaisir ! Je suis là si ta journée change.');
+    // « Préviens Caro que j'ai 10 min de retard », « dis à Sam que j'arrive », « envoie un message à Maman »
+    var tell = text.match(/^\s*(?:pr[ée]viens|pr[ée]venir|dis|dire|[ée]cris|écrire|envoie(?:-lui)?(?:\s+un)?(?:\s+(?:message|sms|texto))?|textote)\s+(?:à\s+|a\s+)?([A-ZÉÈÀa-zéèà][A-Za-zÀ-ÿ-]+)/i);
+    if (tell && !NOT_A_NAME.test(cap(tell[1])) && !/^(le|la|les|mon|ma|mes|que|qu|un|une|tout|tous)$/i.test(tell[1])) return aiTellPerson(text, cap(tell[1]));
     // « Programme ma journée (de demain) à ma place : voir Caro à midi, être à Châtelet à 15h, récupérer mon colis »
     var prog = text.match(/^\s*(?:est-ce que tu peux |tu peux |peux-tu )?(?:programme|programmer|organise|organiser|planifie|planifier|prepare|préparer|prépare|fais|faire|remplis|remplir|prevois|prévois)(?:-moi| moi)?\s+(?:toute\s+)?(?:ma|la)\s+(?:journ[ée]e|semaine)\b([^:,.\-–]*)[:,.\-–]\s*(.+)$/i);
     if (prog && prog[2] && prog[2].trim().length > 2) {
@@ -2947,7 +3028,8 @@
     var txt = label + ' : ' + steps.length + ' étape' + (steps.length > 1 ? 's' : '') +
       (steps.length ? ', de ' + fmt(steps[0].start) + ' à ' + fmt(p.finish) : '') +
       (p.totalTravel ? ', environ ' + dur(p.totalTravel) + ' de trajet' : '') + '.' +
-      (leave ? ' Départ conseillé à ' + fmt(leave) + '.' : '');
+      (leave ? ' Départ conseillé à ' + fmt(leave) + '.' : '') +
+      (wxSummary(d) ? '\nMétéo : ' + wxSummary(d) + '.' : '');
     var lines = steps.map(function (o) {
       return { kind: isFixed(o.item) ? 'warn' : 'keep', text: fmt(o.start) + ' · ' + o.item.title + (placeOf(o.item) ? ' (' + o.item.place.name + ')' : '') + (o.late ? ' · risque de retard' : '') };
     });
@@ -3141,8 +3223,7 @@
           pa.created.forEach(function (c) {
             var it = byId(c.item.id);
             if (!it || it.place || it.online) return;
-            var lowTitle = it.title.charAt(0).toLowerCase() + it.title.slice(1);
-            var who = (lowTitle.match(/(?:^|\s)(?:voir|retrouver|rejoindre|déjeuner avec|dejeuner avec|dîner avec|diner avec|avec)\s+([A-ZÉÈ][\wéèêàç-]+)/) || [])[1];
+            var who = it.person || personIn(it.title);
             var q = who ? 'Où vois-tu ' + who + (it.start ? ' à ' + it.start : '') + ' ?' :
               (/colis|relais/i.test(it.title) ? 'Où récupères-tu ton colis ? (point relais, bureau de poste…)' : 'Où a lieu « ' + it.title + ' » ?');
             after.push(el('div', { class: 'ai-opt' },
@@ -3153,9 +3234,16 @@
                 x.place = pl; x.locationText = ''; save(); render();
                 var o = planDay(x.date).out.filter(function (q) { return q.item.id === x.id; })[0];
                 var far = state.settings.home && km(state.settings.home, pl) > 150;
-                aiSay('Noté : ' + x.title + (x.start ? ' à ' + x.start : '') + ', ' + pl.name + '.' +
+                var msg = 'Noté : ' + x.title + (x.start ? ' à ' + x.start : '') + ', ' + pl.name + '.' +
                   (far ? ' Attention, ce lieu est à plus de 150 km de chez toi : vérifie que c\'est le bon.' :
-                    (o && o.travel ? ' Pars à ' + fmt(o.leaveAt || (o.start - o.travel)) + ' (' + dur(o.travel) + ' de trajet).' : ' Ta journée est réorganisée.')));
+                    (o && o.travel ? ' Pars à ' + fmt(o.leaveAt || (o.start - o.travel)) + ' (' + dur(o.travel) + ' de trajet).' : ' Ta journée est réorganisée.'));
+                if (who) {
+                  // on retient le lieu habituel de ce proche, et on propose d'enregistrer son numéro
+                  var per = upsertPerson(who, { place: Object.assign({}, pl) });
+                  x.person = per.name; save();
+                  msg += ' Je retiens que tu vois souvent ' + per.name + ' là-bas : la prochaine fois, ce sera automatique.';
+                  aiSay(msg, per.phone ? null : { status: 'done', summary: 'Numéro proposé.', body: [personPhoneForm(per)] });
+                } else aiSay(msg);
               })));
           });
           after.push(aiBtn('Voir la journée', function () { $('#ai').close(); currentDate = dayOf; go('day'); setMode('day'); }, 'block'));
@@ -3164,6 +3252,100 @@
       }
     });
   }
+
+  // ---------- Proches : numéro, message direct ----------
+  function smsHref(phone, txt) {
+    var ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    return 'sms:' + phone.replace(/\s/g, '') + (ios ? '&' : '?') + 'body=' + encodeURIComponent(txt);
+  }
+  function personPhoneForm(per, after) {
+    var ph = el('input', { type: 'tel', inputmode: 'tel', placeholder: 'Numéro de ' + per.name, 'aria-label': 'Numéro de ' + per.name });
+    var box = el('div', { class: 'ai-opt' },
+      el('strong', { text: 'Enregistrer le numéro de ' + per.name + ' ?' }),
+      el('small', { text: 'Pour la prévenir en un tap la prochaine fois. Il reste sur ton téléphone.' }),
+      el('div', { class: 'searchrow' }, ph, aiBtn('Enregistrer', function () {
+        var v = ph.value.trim();
+        if (!/\d{6,}/.test(v.replace(/\D/g, ''))) { ph.focus(); toast('Numéro incomplet.'); return; }
+        upsertPerson(per.name, { phone: v });
+        box.innerHTML = '';
+        box.appendChild(el('p', { class: 'ai-result', text: 'Numéro de ' + per.name + ' enregistré.' }));
+        if (after) after();
+      }, 'primary')));
+    return box;
+  }
+  function personSendButtons(per, txt) {
+    var wrap = el('div', { class: 'stack' }, el('p', { class: 'ai-preview', text: '« ' + txt + ' »' }));
+    var area = el('textarea', { class: 'msg', 'aria-label': 'Message' }); area.value = txt;
+    var aSms = el('a', { class: 'btn primary block' }, 'Envoyer le SMS à ' + per.name);
+    var aWa = el('a', { class: 'btn block', target: '_blank', rel: 'noopener' }, 'WhatsApp');
+    function refresh() { aSms.href = smsHref(per.phone, area.value); aWa.href = 'https://wa.me/' + intlPhone(per.phone) + '?text=' + encodeURIComponent(area.value); }
+    area.addEventListener('input', refresh); refresh();
+    wrap.innerHTML = '';
+    wrap.appendChild(area); wrap.appendChild(aSms);
+    wrap.appendChild(el('div', { class: 'channels' }, aWa, el('a', { class: 'btn', href: 'tel:' + per.phone.replace(/\s/g, '') }, 'Appeler')));
+    wrap.appendChild(el('small', { class: 'hint', text: 'Ta messagerie s\'ouvre avec le texte : il ne reste qu\'à appuyer sur Envoyer.' }));
+    return wrap;
+  }
+  // « Préviens Caro que j'ai 10 min de retard », « dis à Sam que j'arrive », « écris à Maman »
+  function aiTellPerson(text, name) {
+    var n = norm(text);
+    var per = findPerson(name) || upsertPerson(name, {});
+    var rest = (text.match(/\bque?\s+(.+)$/i) || text.match(/\b(?:qu')(.+)$/i) || [])[1] || '';
+    var min = aiMinutes(n);
+    var txt;
+    if (/retard/.test(n)) {
+      if (!min) { var o = planDay(today()).out.filter(function (x) { return x.item.person && norm(x.item.person) === norm(per.name) && !x.past; })[0]; min = o ? lateMinutes(o.item, today()) : 0; }
+      txt = 'Coucou ' + per.name + ', j\'aurai environ ' + (min || 10) + ' min de retard, désolé !';
+    } else if (/\b(j'arrive|arrive)\b/.test(n) && !rest) txt = 'Coucou ' + per.name + ', j\'arrive !';
+    else txt = 'Coucou ' + per.name + (rest ? ', ' + rest.replace(/\s*[.!]?$/, '') + '.' : ', ');
+    var sendBox = el('div');
+    function fill() { sendBox.innerHTML = ''; sendBox.appendChild(personSendButtons(findPerson(per.name), txt)); }
+    if (per.phone) fill();
+    else sendBox.appendChild(personPhoneForm(per, fill));
+    aiSay(per.phone ? 'Voici le message pour ' + per.name + ' :' : 'Je n\'ai pas encore le numéro de ' + per.name + '.', { status: 'done', summary: 'Message préparé pour ' + per.name + '.', body: [sendBox] });
+  }
+
+  // ---------- Réglages : Mes proches ----------
+  var personEdit = null;
+  function renderPeople() {
+    var box = $('#peopleList'); if (!box) return;
+    box.innerHTML = '';
+    if (!state.people.length && personEdit !== 'new') box.appendChild(el('p', { class: 'hint', text: 'Personne pour l\'instant. Quand tu écris « voir Caro à midi », l\'app retient Caro, son lieu habituel et son numéro.' }));
+    state.people.forEach(function (p) {
+      var row = el('div', { class: 'place-row' },
+        el('span', { class: 'place-ic person', text: p.name.charAt(0).toUpperCase() }),
+        el('div', { class: 'place-tx' }, el('strong', { text: p.name }),
+          el('small', { text: (p.phone || 'Pas de numéro') + (p.place ? ' · ' + p.place.name : '') })),
+        el('div', { class: 'place-act' },
+          aiBtn('Modifier', function () { personEdit = p.id; renderPeople(); }),
+          el('button', { type: 'button', class: 'icon-btn small', 'aria-label': 'Retirer ' + p.name, onclick: function () {
+            state.people = state.people.filter(function (x) { return x.id !== p.id; }); save(); renderPeople();
+          } }, '×')));
+      var wrap = el('div', { class: 'place-wrap' }, row);
+      if (personEdit === p.id) wrap.appendChild(personEditor(p));
+      box.appendChild(wrap);
+    });
+    if (personEdit === 'new') box.appendChild(el('div', { class: 'place-wrap' }, el('p', { class: 'sectlabel', text: 'Nouveau proche' }), personEditor(null)));
+    $('#addPersonBtn').hidden = personEdit === 'new';
+  }
+  function personEditor(p) {
+    var nm = el('input', { placeholder: 'Prénom', 'aria-label': 'Prénom', value: p ? p.name : '' });
+    var ph = el('input', { type: 'tel', inputmode: 'tel', placeholder: 'Téléphone (facultatif)', 'aria-label': 'Téléphone', value: p && p.phone ? p.phone : '' });
+    var picked = p && p.place ? p.place : null;
+    var pickedTxt = el('small', { class: 'hint', text: picked ? 'Lieu habituel : ' + picked.label : 'Lieu habituel (facultatif) :' });
+    var search = onbSearch('Café, bureau, chez elle…', function (pl) { picked = pl; pickedTxt.textContent = 'Lieu habituel : ' + pl.label; });
+    return el('div', { class: 'place-edit' }, nm, ph, pickedTxt, search,
+      el('div', { class: 'grid2' },
+        aiBtn('Annuler', function () { personEdit = null; renderPeople(); }),
+        aiBtn('Enregistrer', function () {
+          var name = nm.value.trim();
+          if (!name) { nm.focus(); return; }
+          if (p && norm(p.name) !== norm(name)) p.name = cap(name);
+          upsertPerson(name, { phone: ph.value.trim() || undefined, place: picked || undefined });
+          personEdit = null; renderPeople(); toast('« ' + cap(name) + ' » enregistré');
+        }, 'primary')));
+  }
+  $('#addPersonBtn').addEventListener('click', function () { personEdit = 'new'; renderPeople(); });
 
   // ================= Premier lancement guidé =================
   var onb = { step: 0, home: null, work: null, workKind: 'Travail', addHours: true, wStart: '09:00', wEnd: '18:00', mode: 'transit' };
@@ -3302,7 +3484,7 @@
         }
       }
     }
-    save(); render();
+    save(); render(); loadWeather(true);
     if (skipped) { var dl = $('#onb'); if (dl.open) dl.close(); return; }
     onb.step = 4; renderOnb();
   }
@@ -3374,12 +3556,130 @@
       el('button', { type: 'button', onclick: openFeedback }, 'Répondre')));
   }
 
+  // ================= Météo (Open-Meteo, gratuit, sans compte) =================
+  var wx = { data: null, at: 0, key: '' }, wxLoading = false;
+  function loadWeather(force) {
+    var h = state.settings.home;
+    if (!h || wxLoading) return;
+    var key = h.lat.toFixed(2) + ',' + h.lon.toFixed(2);
+    if (!force && wx.data && wx.key === key && Date.now() - wx.at < 2 * 3600e3) return;
+    if (!wx.data) { try { var c = JSON.parse(localStorage.getItem('mj.weather')); if (c && c.key === key && Date.now() - c.at < 2 * 3600e3) { wx = c; render(); return; } } catch (e) { /* ignore */ } }
+    wxLoading = true;
+    fetch('https://api.open-meteo.com/v1/forecast?latitude=' + h.lat + '&longitude=' + h.lon +
+      '&hourly=temperature_2m,precipitation_probability,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max&timezone=Europe%2FParis&forecast_days=8')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.hourly) return;
+        wx = { data: j, at: Date.now(), key: key };
+        try { localStorage.setItem('mj.weather', JSON.stringify(wx)); } catch (e) { /* ignore */ }
+        render();
+      }).catch(function () { /* hors ligne : pas de météo */ }).then(function () { wxLoading = false; });
+  }
+  function wxAt(date, min) {
+    var j = wx.data; if (!j || !j.hourly) return null;
+    var i = j.hourly.time.indexOf(date + 'T' + pad(Math.max(0, Math.min(23, Math.floor(min / 60)))) + ':00');
+    if (i < 0) return null;
+    return { t: Math.round(j.hourly.temperature_2m[i]), p: j.hourly.precipitation_probability[i] || 0, c: j.hourly.weather_code[i] };
+  }
+  function wxDay(date) {
+    var j = wx.data; if (!j || !j.daily) return null;
+    var i = j.daily.time.indexOf(date); if (i < 0) return null;
+    return { max: Math.round(j.daily.temperature_2m_max[i]), min: Math.round(j.daily.temperature_2m_min[i]), c: j.daily.weather_code[i], p: j.daily.precipitation_probability_max[i] || 0 };
+  }
+  function wxLabel(c) {
+    if (c === 0) return 'Grand soleil';
+    if (c <= 2) return 'Éclaircies';
+    if (c === 3) return 'Nuageux';
+    if (c === 45 || c === 48) return 'Brouillard';
+    if (c >= 51 && c <= 57) return 'Bruine';
+    if (c >= 61 && c <= 67) return 'Pluie';
+    if (c >= 71 && c <= 77) return 'Neige';
+    if (c >= 80 && c <= 82) return 'Averses';
+    if (c >= 85 && c <= 86) return 'Averses de neige';
+    if (c >= 95) return 'Orage';
+    return 'Variable';
+  }
+  function isWet(w) { return w && (w.p >= 50 || (w.c >= 51 && w.c <= 99 && w.p >= 30)); }
+  // Première heure de pluie probable dans la journée (entre 7 h et 22 h)
+  function rainFrom(date, fromMin) {
+    for (var m = Math.max(fromMin || 0, 7 * 60); m <= 22 * 60; m += 60) { var w = wxAt(date, m); if (isWet(w)) return { at: Math.floor(m / 60) * 60, w: w }; }
+    return null;
+  }
+  function wxSummary(date) {
+    var d = wxDay(date); if (!d) return '';
+    var rain = rainFrom(date, date === today() ? nowMin() : 0);
+    return wxLabel(d.c) + ', ' + d.min + '° → ' + d.max + '°' + (rain ? ' · pluie probable vers ' + fmt(rain.at) + ' (' + rain.w.p + ' %)' : (d.p < 30 ? ' · pas de pluie prévue' : ''));
+  }
+
+  // ================= Briefing du matin, bilan du soir, tâches en retard =================
+  function renderBrief(plan) {
+    var box = $('#brief'); if (!box) return;
+    box.innerHTML = '';
+    if (currentDate !== today()) return;
+    var s = state.settings, t = today(), n = nowMin();
+    // 1. Tâches des jours précédents pas faites
+    var overdue = state.items.filter(function (i) { return i.repeat === 'none' && !isFixed(i) && i.date < t && !i.doneDates[i.date]; });
+    if (overdue.length && s.carryHide !== t) {
+      box.appendChild(el('div', { class: 'brief warnb' },
+        el('p', { class: 'brief-k', text: 'Pas encore fait' }),
+        el('strong', { text: overdue.length + ' tâche' + (overdue.length > 1 ? 's' : '') + ' des jours précédents : ' + overdue.slice(0, 4).map(function (i) { return i.title; }).join(', ') + (overdue.length > 4 ? '…' : '') }),
+        el('div', { class: 'btns' },
+          aiBtn('Les mettre aujourd\'hui', function () {
+            withUndo(overdue.length + ' tâche(s) ajoutée(s) à aujourd\'hui', function () { overdue.forEach(function (i) { i.date = t; }); save(); render(); });
+          }, 'primary'),
+          aiBtn('Plus tard', function () { s.carryHide = t; save(); render(); }))));
+    }
+    // 2. Briefing du matin (jusqu'à midi)
+    var steps = plan.out.filter(function (o) { return !o.past && !o.item.done && !o.ongoing; });
+    if (n < 12 * 60 && s.briefDay !== t && (steps.length || wxDay(t))) {
+      var first = steps.filter(function (o) { return o.travel; })[0] || steps[0];
+      var lines = [];
+      if (steps.length) lines.push(steps.length + ' étape' + (steps.length > 1 ? 's' : '') + ', de ' + fmt(steps[0].start) + ' à ' + fmt(plan.finish) + (plan.totalTravel ? ' · ≈ ' + dur(plan.totalTravel) + ' de trajet' : ''));
+      if (first && first.travel) lines.push('Premier départ à ' + fmt(first.leaveAt || first.start - first.travel) + ' pour ' + first.item.title);
+      var ws = wxSummary(t); if (ws) lines.push(ws);
+      var rain = rainFrom(t, n);
+      if (rain && s.mode === 'bicycling') lines.push('Pluie prévue : pense aux transports plutôt qu\'au vélo');
+      var takeFrom = steps.filter(function (o) { var src = byId(o.item.id); return src && packList(src).length; })[0];
+      if (takeFrom) { var src = byId(takeFrom.item.id); var tk = packList(src).filter(function (x) { return !packChecked(src, t)[x]; }); if (rain) tk.push('Parapluie'); if (tk.length) lines.push('À prendre : ' + tk.join(', ')); }
+      else if (rain) lines.push('À prendre : parapluie');
+      if (plan.leftover.length) lines.push('Attention : ' + plan.leftover.length + ' tâche(s) ne rentrent pas, regarde les compromis plus bas');
+      var ul = el('ul'); lines.forEach(function (l) { ul.appendChild(el('li', { text: l })); });
+      box.appendChild(el('div', { class: 'brief' },
+        el('p', { class: 'brief-k', text: 'Briefing du matin' }),
+        el('strong', { text: 'Bonjour' + (s.name ? ' ' + s.name : '') + ' ! Voici ta journée' }),
+        ul,
+        aiBtn('C\'est noté', function () { s.briefDay = t; save(); render(); })));
+    }
+    // 3. Bilan du soir
+    var eveningFrom = Math.min(19 * 60, toMin(s.dayEnd) - 60);
+    if (n >= eveningFrom && s.recapDay !== t) {
+      var occ = occurrences(t);
+      if (occ.length) {
+        var done = occ.filter(function (o) { return o.done; }).length;
+        var left = occ.filter(function (o) { return !o.done && o.repeat === 'none' && !isFixed(o); });
+        var all = left.length === 0;
+        box.appendChild(el('div', { class: 'brief ' + (all ? 'okb' : '') },
+          el('p', { class: 'brief-k', text: 'Bilan du jour' }),
+          el('strong', { text: all ? 'Bravo, ta journée est bouclée ! (' + done + ' étape' + (done > 1 ? 's' : '') + ' faite' + (done > 1 ? 's' : '') + ')' : done + ' sur ' + occ.length + ' faites. Reste : ' + left.map(function (i) { return i.title; }).join(', ') }),
+          wxDay(addDays(t, 1)) ? el('p', { class: 'brief-w', text: 'Demain : ' + wxSummary(addDays(t, 1)) }) : null,
+          el('div', { class: 'btns' },
+            all ? null : aiBtn('Tout mettre à demain', function () {
+              withUndo(left.length + ' tâche(s) mise(s) à demain', function () { left.forEach(function (o) { moveOccurrence(o.id, t, { date: addDays(t, 1) }); }); });
+              s.recapDay = t; save(); render();
+            }, 'primary'),
+            aiBtn(all ? 'Merci !' : 'Je m\'en occupe ce soir', function () { s.recapDay = t; save(); render(); }))));
+      }
+    }
+  }
+
   // ================= Démarrage =================
   if (!state.settings.firstUse) { state.settings.firstUse = today(); save(); }
   if (!state.settings.onboarded && state.settings.home) { state.settings.onboarded = true; save(); } // utilisateurs déjà installés
   resetForm();
   render();
   if (!state.settings.onboarded) setTimeout(openOnboarding, 400);
+  loadWeather();
+  setInterval(function () { loadWeather(); }, 30 * 60 * 1000);
   setInterval(function () {
     checkReminders();
     if ($('#view-day').classList.contains('active') && viewMode === 'day' && currentDate === today()) render();

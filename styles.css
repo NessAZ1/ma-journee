@@ -325,11 +325,24 @@ summary{cursor:pointer;font-weight:600;min-height:32px}
 .wg-now{position:absolute;left:0;right:0;height:2px;background:var(--hot-ink);z-index:2}
 .wg-now::before{content:"";position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--hot-ink)}
 .chip.ghost{border-style:dashed;color:var(--muted);font-weight:500}
+/* Briefing / bilan / météo */
+.brief{background:var(--card);border:1px solid var(--accent);border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.brief.warnb{border-color:var(--warn-line);background:var(--warn-bg)}
+.brief.okb{border-color:var(--ok-line);background:var(--ok-bg)}
+.brief-k{margin:0;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
+.brief.warnb .brief-k{color:var(--warn-ink)}
+.brief.okb .brief-k{color:var(--ok-ink)}
+.brief strong{font-size:16px;line-height:1.35;overflow-wrap:anywhere}
+.brief ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:14px;line-height:1.4}
+.brief-w{margin:0;font-size:14px;color:var(--muted)}
+.brief .btns .btn{min-height:44px}
+.wxnote{margin:0;font-size:12px;font-weight:600;color:var(--accent-ink)}
 /* Mes lieux */
 .place-wrap{display:flex;flex-direction:column;gap:8px}
 .place-row{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:10px 10px 10px 12px}
 .place-row.unset{border-style:dashed}
 .place-ic{width:38px;height:38px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.place-ic.person{font-family:var(--font-display);font-size:17px;font-weight:700;border-radius:50%}
 .place-row.unset .place-ic{background:var(--sunk);color:var(--muted)}
 .place-ic svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .place-tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
