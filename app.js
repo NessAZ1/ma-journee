@@ -167,6 +167,74 @@
     return hit ? { m: hit.m, why: hit.why } : { m: 0, why: '' };
   }
 
+  // ================= Horaires d'ouverture (format OpenStreetMap) =================
+  // Comprend les formes courantes : « Mo-Fr 09:00-19:00; Sa 09:00-12:00 », « Tu-Sa 12:00-14:00,19:00-22:00 », « Su off », « 24/7 ».
+  var OH_DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+  var hoursCache = {};
+  function parseHours(s) {
+    if (!s) return null;
+    s = String(s).trim();
+    if (hoursCache[s] !== undefined) return hoursCache[s];
+    var res = null;
+    if (/^24\/7$/.test(s)) res = { always: true };
+    else {
+      var week = [null, null, null, null, null, null, null], ok = false;
+      s.split(';').forEach(function (rule) {
+        rule = rule.trim();
+        if (!rule || /^(PH|SH)\b/.test(rule)) return;
+        var m = rule.match(/^((?:(?:Mo|Tu|We|Th|Fr|Sa|Su)(?:\s*-\s*(?:Mo|Tu|We|Th|Fr|Sa|Su))?\s*,?\s*)+)?(.*)$/);
+        if (!m) return;
+        var days = [];
+        if (m[1]) {
+          m[1].split(',').forEach(function (p) {
+            p = p.trim(); if (!p) return;
+            var r = p.split('-').map(function (x) { return x.trim(); });
+            var a = OH_DAYS.indexOf(r[0]), b = r[1] ? OH_DAYS.indexOf(r[1]) : a;
+            if (a < 0 || b < 0) return;
+            for (var i = a, guard = 0; guard < 8; i = (i + 1) % 7, guard++) { days.push(i); if (i === b) break; }
+          });
+        } else days = [0, 1, 2, 3, 4, 5, 6];
+        var rest = (m[2] || '').trim(), intervals = [];
+        if (!/^(off|closed)$/i.test(rest)) {
+          var tm = rest.match(/\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/g);
+          if (!tm) return;
+          tm.forEach(function (t) {
+            var q = t.split('-').map(function (x) { return toMin(x.trim()); });
+            intervals.push([q[0], q[1] <= q[0] ? q[1] + 1440 : q[1]]);
+          });
+        }
+        days.forEach(function (d) { week[d] = intervals; });
+        ok = true;
+      });
+      res = ok ? { week: week } : null;
+    }
+    hoursCache[s] = res;
+    return res;
+  }
+  function dayIntervals(place, date) {
+    var h = place && parseHours(place.hours);
+    if (!h) return null;
+    if (h.always) return [[0, 1440]];
+    return h.week[parseDate(date).getDay()] || []; // jour non cité = fermé
+  }
+  function closedAllDay(place, date) { var iv = dayIntervals(place, date); return !!iv && iv.length === 0; }
+  // Premier moment où l'on peut faire `dur` minutes sur place à partir de `from` (null = horaires inconnus)
+  function openFrom(place, date, from, dur) {
+    var iv = dayIntervals(place, date);
+    if (!iv) return null;
+    for (var i = 0; i < iv.length; i++) {
+      var st = Math.max(from, iv[i][0]);
+      if (st + dur <= iv[i][1]) return st;
+    }
+    return -1;
+  }
+  function openUntil(place, date, at) {
+    var iv = dayIntervals(place, date);
+    if (!iv) return null;
+    for (var i = 0; i < iv.length; i++) if (at >= iv[i][0] && at < iv[i][1]) return iv[i][1] % 1440;
+    return -1;
+  }
+
   function planDay(date) {
     var s = state.settings;
     var items = occurrences(date);
@@ -192,11 +260,17 @@
           var tp = placeOf(t);
           var tt = travel(pos, tp);
           var arrive = cur + tt + (tt ? buffer : 0);
+          var wait = 0;
+          if (tp && tp.hours) { // attendre l'ouverture si besoin, ou passer si c'est fermé
+            var op = openFrom(tp, date, arrive, +t.duration || 15);
+            if (op === -1) return;
+            if (op !== null && op > arrive) { wait = op - arrive; arrive = op; }
+          }
           var finish = arrive + (+t.duration || 15);
           var next = f ? travel(tp || pos, fPlace) : 0;
           if (finish + next + (next ? buffer : 0) > limit) return;
           if (t.deadline && finish > toMin(t.deadline)) return;
-          var score = tt;
+          var score = tt + wait;
           if (t.priority === 'haute') score -= 60;
           if (t.deadline) score -= Math.max(0, 180 - (toMin(t.deadline) - cur)) / 2;
           if (!best || score < best.score) best = { t: t, tt: tt, arrive: arrive, finish: finish, score: score };
@@ -359,6 +433,9 @@
     var box = '&viewbox=' + (Math.min.apply(null, lons) - 0.02) + ',' + (Math.max.apply(null, lats) + 0.015) + ',' + (Math.max.apply(null, lons) + 0.02) + ',' + (Math.min.apply(null, lats) - 0.015);
     function best(list) {
       if (!list.length) return null;
+      // on écarte les lieux fermés toute la journée ce jour-là (horaires OpenStreetMap)
+      var open = list.filter(function (c) { return !closedAllDay(c, date || currentDate); });
+      if (open.length) list = open;
       list.forEach(function (c) { c._d = detourKm(pts, c); });
       list.sort(function (a, b) { return a._d - b._d; });
       var pick = list[0];
@@ -456,6 +533,7 @@
     { re: /\b(coiffeur|barbier)\b/, days: [0, 1] }
   ];
   function closedOn(item, d) {
+    if (item.place && item.place.hours && !item.online) { var iv = dayIntervals(item.place, d); if (iv) return iv.length === 0; }
     var n = norm(item.title + ' ' + (item.query || ''));
     var dow = parseDate(d).getDay();
     return CLOSED.some(function (c) { return c.re.test(n) && c.days.indexOf(dow) >= 0; });
@@ -690,6 +768,13 @@
       (it.source && it.source !== 'manuel' && it.source !== 'exemple' ? ' · via ' + it.source : '');
     var detourNote = it.place && it.place.detour != null && !it.done
       ? el('p', { class: 'onroute', text: it.place.detour <= 2 ? 'Pile sur votre trajet' : 'Sur votre trajet · +' + it.place.detour + ' min de détour' }) : null;
+    // Horaires d'ouverture connus : ouvert jusqu'à quand, ou alerte si fermé
+    var hoursNote = null;
+    if (placeOf(it) && it.place.hours && !it.done && !o.past) {
+      var until = openUntil(it.place, d, o.start);
+      if (until === -1) hoursNote = el('p', { class: 'hours closed', text: 'Sans doute fermé à cette heure (horaires OpenStreetMap)' });
+      else if (until !== null) hoursNote = el('p', { class: 'hours' + (until < o.end ? ' closed' : ''), text: until < o.end ? 'Ferme à ' + fmt(until) + ' : ce sera juste' : 'Ouvert jusqu\'à ' + fmt(until) });
+    }
 
     var badges = el('div', { class: 'badges' },
       it.priority === 'haute' ? el('span', { class: 'badge hot', text: 'Urgent' }) : null,
@@ -713,6 +798,7 @@
       el('div', { class: 'head' }, el('h3', { class: 'title', text: it.title }), badges),
       el('p', { class: 'meta', text: meta }),
       detourNote,
+      hoursNote,
       it.done ? null : packBox(it, d),
       btns);
     var swipe = el('div', { class: 'swipe' },
@@ -937,6 +1023,7 @@
         el('p', { text: 'Astuce : glissez une étape vers la droite pour la terminer, vers la gauche pour la reprogrammer, l\'annuler ou prévenir.' }),
         el('button', { type: 'button', onclick: function () { state.settings.swipeTip = true; save(); render(); } }, 'Compris')));
     }
+    feedbackNudge(tl);
     plan.out.forEach(function (o) { tl.appendChild(itemCard(o)); });
     if (plan.backHome && plan.out.length) tl.appendChild(el('p', { class: 'travel', text: 'Retour au point de départ ≈ ' + dur(plan.backHome) }));
 
@@ -946,6 +1033,8 @@
       lb.appendChild(el('div', { class: 'card' },
         el('div', { class: 'head' }, el('h3', { class: 'title', text: it.title }), el('span', { class: 'badge flex', text: dur(+it.duration || 15) })),
         it.missedDeadline ? el('p', { class: 'meta', text: 'Impossible avant ' + it.deadline + ' avec le reste du planning.' }) : null,
+        placeOf(it) && closedAllDay(it.place, it.occ) ? el('p', { class: 'hours closed', text: it.place.name + ' est fermé ce jour-là (horaires OpenStreetMap)' }) :
+          (placeOf(it) && it.place.hours ? el('p', { class: 'hours', text: 'Horaires : ' + it.place.hours }) : null),
         el('div', { class: 'btns' },
           el('button', { class: 'btn', type: 'button', onclick: function () { moveOccurrence(it.id, it.occ, { date: addDays(it.occ, 1) }); } }, 'Mettre demain'),
           el('button', { class: 'btn', type: 'button', onclick: function () { startEdit(it.id); } }, 'Modifier'))));
@@ -2810,9 +2899,192 @@
     });
   }
 
+  // ================= Premier lancement guidé =================
+  var onb = { step: 0, home: null, work: null, workKind: 'Travail', addHours: true, wStart: '09:00', wEnd: '18:00', mode: 'transit' };
+  var ONB_MODES = [
+    ['transit', 'Transports', '<rect x="5" y="3" width="14" height="14" rx="3"/><path d="M5 11h14M8 21l2-4M16 21l-2-4"/><circle cx="8.5" cy="14" r=".5"/><circle cx="15.5" cy="14" r=".5"/>'],
+    ['walking', 'À pied', '<circle cx="13" cy="4" r="2"/><path d="M10 22l2-7-3-3 1-5 4 3 3 1M9 12l-2 4"/>'],
+    ['bicycling', 'Vélo', '<circle cx="6" cy="17" r="3.5"/><circle cx="18" cy="17" r="3.5"/><path d="M6 17l4-8h5l3 8M10 9l2 8M14 5h3"/>'],
+    ['driving', 'Voiture', '<path d="M5 16V11l2-5h10l2 5v5M3 16h18v3H3zM5 11h14"/><circle cx="7.5" cy="16" r="1"/><circle cx="16.5" cy="16" r="1"/>']
+  ];
+  function openOnboarding() {
+    onb = { step: 0, home: state.settings.home || null, work: findFav('Travail') || findFav('École') || null, workKind: 'Travail', addHours: true, wStart: '09:00', wEnd: '18:00', mode: state.settings.mode || 'transit' };
+    renderOnb();
+    var dl = $('#onb');
+    if (!dl.open) { if (dl.showModal) dl.showModal(); else dl.setAttribute('open', ''); }
+  }
+  $('#onbAgain').addEventListener('click', openOnboarding);
+  $('#onb').addEventListener('cancel', function () { finishOnb(true); });
+
+  function onbSearch(placeholder, onPick) {
+    var input = el('input', { placeholder: placeholder, 'aria-label': placeholder });
+    var btn = el('button', { type: 'button', class: 'btn' }, 'Chercher');
+    var results = el('div', { class: 'results' });
+    setupSearch(input, btn, results, onPick);
+    return el('div', { class: 'stack' }, el('div', { class: 'searchrow' }, input, btn), results);
+  }
+  function renderOnb() {
+    var body = $('#onbBody'); body.innerHTML = '';
+    var prog = $('#onbProgress'); prog.innerHTML = '';
+    for (var i = 0; i < 3; i++) prog.appendChild(el('span', { class: i < onb.step ? 'on' : '' }));
+    var next = function () { onb.step++; renderOnb(); };
+
+    if (onb.step === 0) {
+      $('#onbStep').textContent = 'Bienvenue';
+      $('#onbTitle').textContent = 'Ton GPS du quotidien';
+      body.appendChild(el('p', { class: 'onb-lead', text: 'Tu notes ce que tu as à faire, Ma Journée trouve les lieux, choisit le meilleur ordre, calcule les trajets et t\'aide quand tout dérape. 3 questions pour commencer (30 secondes).' }));
+      body.appendChild(el('p', { class: 'privacy', text: 'Tout reste sur ton téléphone. Pas de compte à créer.' }));
+      body.appendChild(el('div', { class: 'onb-nav' }, aiBtn('Passer', function () { finishOnb(true); }), aiBtn('C\'est parti', next, 'primary')));
+      return;
+    }
+    if (onb.step === 1) {
+      $('#onbStep').textContent = 'Question 1 sur 3';
+      $('#onbTitle').textContent = 'D\'où pars-tu le matin ?';
+      body.appendChild(el('p', { class: 'onb-lead', text: 'Ton adresse sert à calculer les trajets et à trouver les lieux près de chez toi. Elle reste sur ton téléphone.' }));
+      if (onb.home) body.appendChild(el('p', { class: 'picked', text: 'Départ : ' + onb.home.label }));
+      body.appendChild(onbSearch(onb.home ? 'Changer d\'adresse' : 'Ton adresse (rue, ville)', function (p) { onb.home = p; renderOnb(); }));
+      body.appendChild(el('div', { class: 'onb-nav' }, aiBtn('Plus tard', next), el('button', { type: 'button', class: 'btn primary', disabled: onb.home ? null : 'disabled', onclick: next }, 'Continuer')));
+      return;
+    }
+    if (onb.step === 2) {
+      $('#onbStep').textContent = 'Question 2 sur 3';
+      $('#onbTitle').textContent = 'Tu travailles ou tu étudies où ?';
+      var kinds = el('div', { class: 'chips' });
+      ['Travail', 'École'].forEach(function (k) {
+        kinds.appendChild(el('button', { type: 'button', class: 'chip', 'aria-pressed': onb.workKind === k ? 'true' : 'false', onclick: function () { onb.workKind = k; renderOnb(); } }, k === 'École' ? 'École / études' : 'Travail'));
+      });
+      body.appendChild(kinds);
+      if (onb.work) body.appendChild(el('p', { class: 'picked', text: onb.workKind + ' : ' + onb.work.label }));
+      body.appendChild(onbSearch(onb.work ? 'Changer d\'adresse' : 'Adresse de ton ' + (onb.workKind === 'École' ? 'école' : 'travail'), function (p) { onb.work = p; renderOnb(); }));
+      if (onb.work) {
+        var cb = el('input', { type: 'checkbox', id: 'onbHours' }); cb.checked = onb.addHours;
+        cb.addEventListener('change', function () { onb.addHours = cb.checked; });
+        var s1 = el('input', { type: 'time', id: 'onbStart', value: onb.wStart, 'aria-label': 'Heure d\'arrivée' });
+        var s2 = el('input', { type: 'time', id: 'onbEnd', value: onb.wEnd, 'aria-label': 'Heure de fin' });
+        s1.addEventListener('change', function () { onb.wStart = s1.value; });
+        s2.addEventListener('change', function () { onb.wEnd = s2.value; });
+        body.appendChild(el('label', { class: 'check', for: 'onbHours' }, cb, ' Ajouter mes horaires au planning, du lundi au vendredi'));
+        body.appendChild(el('div', { class: 'grid2' }, el('div', null, s1), el('div', null, s2)));
+      }
+      body.appendChild(el('div', { class: 'onb-nav' }, aiBtn('Pas de lieu fixe', function () { onb.work = null; next(); }), el('button', { type: 'button', class: 'btn primary', disabled: onb.work ? null : 'disabled', onclick: next }, 'Continuer')));
+      return;
+    }
+    if (onb.step === 3) {
+      $('#onbStep').textContent = 'Question 3 sur 3';
+      $('#onbTitle').textContent = 'Tu te déplaces surtout comment ?';
+      var grid = el('div', { class: 'onb-choices' });
+      ONB_MODES.forEach(function (m) {
+        var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true'); svg.innerHTML = m[2];
+        grid.appendChild(el('button', { type: 'button', class: 'onb-choice', 'aria-pressed': onb.mode === m[0] ? 'true' : 'false', onclick: function () { onb.mode = m[0]; renderOnb(); } }, svg, m[1]));
+      });
+      body.appendChild(grid);
+      body.appendChild(el('div', { class: 'onb-nav' }, el('button', { type: 'button', class: 'btn primary', onclick: function () { finishOnb(false); } }, 'Terminer')));
+      return;
+    }
+    // Écran final
+    $('#onbStep').textContent = 'C\'est prêt';
+    $('#onbTitle').textContent = 'Ta journée t\'attend';
+    body.appendChild(el('p', { class: 'onb-lead', text: 'Écris tes tâches comme tu les dirais (« pharmacie, courses, dentiste à 15h ») ou demande à l\'assistant. Glisse une étape vers la droite pour la terminer, vers la gauche pour la déplacer.' }));
+    body.appendChild(aiBtn('Essayer l\'assistant ✨', function () { $('#onb').close(); aiOpen(); }, 'primary block'));
+    if (!state.items.length) body.appendChild(aiBtn('Voir un exemple', function () { $('#onb').close(); loadDemo(); }, 'block'));
+    body.appendChild(aiBtn('Commencer', function () { $('#onb').close(); }, 'block'));
+  }
+  function finishOnb(skipped) {
+    state.settings.onboarded = true;
+    if (!state.settings.firstUse) state.settings.firstUse = today();
+    if (!skipped) {
+      if (onb.home) state.settings.home = onb.home;
+      state.settings.mode = onb.mode;
+      if (onb.work) {
+        var name = onb.workKind;
+        state.favorites = state.favorites.filter(function (f) { return norm(f.name) !== norm(name); });
+        state.favorites.push({ id: uid(), name: name, label: onb.work.label, lat: onb.work.lat, lon: onb.work.lon });
+        var hasRoutine = state.items.some(function (i) { return i.repeat !== 'none' && norm(i.title) === norm(name); });
+        if (onb.addHours && onb.wStart && onb.wEnd && toMin(onb.wEnd) > toMin(onb.wStart) && !hasRoutine) {
+          state.items.push({ id: uid(), title: name, fixed: true, date: today(), start: onb.wStart, deadline: '', duration: toMin(onb.wEnd) - toMin(onb.wStart),
+            priority: 'normale', repeat: 'weekdays', skip: [], doneDates: {}, locationText: '', place: { name: name, label: onb.work.label, lat: onb.work.lat, lon: onb.work.lon }, online: false, source: 'manuel' });
+        }
+      }
+    }
+    save(); render();
+    if (skipped) { var dl = $('#onb'); if (dl.open) dl.close(); return; }
+    onb.step = 4; renderOnb();
+  }
+
+  // ================= Donner mon avis =================
+  var FEEDBACK_EMAIL = ''; // adresse qui reçoit les avis (à renseigner)
+  var fb = {};
+  function openFeedback() {
+    fb = { rating: 0, useful: '', annoying: '', missing: '', price: '', sent: false };
+    renderFb();
+    var dl = $('#fb');
+    if (!dl.open) { if (dl.showModal) dl.showModal(); else dl.setAttribute('open', ''); }
+  }
+  $('#fbBtn').addEventListener('click', openFeedback);
+  $('#fbClose').addEventListener('click', function () { $('#fb').close(); });
+  function fbText() {
+    return 'Avis sur Ma Journée\n\nNote : ' + (fb.rating ? fb.rating + '/5' : 'non donnée') +
+      '\nLe plus utile : ' + (fb.useful || '-') + '\nCe qui m\'a perdu ou agacé : ' + (fb.annoying || '-') +
+      '\nCe qui manque : ' + (fb.missing || '-') + '\nJe paierais par mois : ' + (fb.price || '-') +
+      '\n\n(utilisée depuis le ' + frDate(state.settings.firstUse || today(), { day: 'numeric', month: 'long' }) + ')';
+  }
+  function renderFb() {
+    var body = $('#fbBody'); body.innerHTML = '';
+    if (fb.sent) {
+      $('#fbTitle').textContent = 'Merci !';
+      body.appendChild(el('p', { class: 'onb-lead', text: 'Ton avis est prêt. Envoie-le à la personne qui t\'a fait découvrir l\'app : c\'est ce qui nous aide le plus.' }));
+      var txt = fbText();
+      if (navigator.share) body.appendChild(aiBtn('Envoyer (message, WhatsApp…)', function () { navigator.share({ title: 'Avis Ma Journée', text: txt }).catch(function () { /* annulé */ }); }, 'primary block'));
+      if (FEEDBACK_EMAIL) body.appendChild(el('a', { class: 'btn block' + (navigator.share ? '' : ' primary'), href: 'mailto:' + FEEDBACK_EMAIL + '?subject=' + encodeURIComponent('Avis sur Ma Journée') + '&body=' + encodeURIComponent(txt) }, 'Envoyer par e-mail'));
+      body.appendChild(aiBtn('Copier le texte', function () {
+        if (navigator.clipboard) navigator.clipboard.writeText(txt).then(function () { toast('Avis copié'); }, function () { toast('Copie impossible sur cet appareil.'); });
+      }, 'block'));
+      return;
+    }
+    $('#fbTitle').textContent = 'Aide-nous à améliorer Ma Journée';
+    body.appendChild(el('p', { class: 'sectlabel', text: 'Ta note globale' }));
+    var stars = el('div', { class: 'stars', role: 'group', 'aria-label': 'Note sur 5' });
+    [1, 2, 3, 4, 5].forEach(function (n) { stars.appendChild(el('button', { type: 'button', 'aria-pressed': fb.rating === n ? 'true' : 'false', 'aria-label': n + ' sur 5', onclick: function () { fb.rating = n; renderFb(); } }, String(n))); });
+    body.appendChild(stars);
+    function area(key, id, label, ph) {
+      var t = el('textarea', { id: id, placeholder: ph }); t.value = fb[key];
+      t.addEventListener('input', function () { fb[key] = t.value; });
+      body.appendChild(el('label', { for: id, text: label })); body.appendChild(t);
+    }
+    area('useful', 'fbUseful', 'Qu\'est-ce qui t\'a été le plus utile ?', 'Ex. le SOS, la pharmacie sur le trajet…');
+    area('annoying', 'fbAnnoy', 'Qu\'est-ce qui t\'a perdu ou agacé ?', 'Ex. je n\'ai pas trouvé comment…');
+    area('missing', 'fbMissing', 'Une fonction qui te manque ?', 'Ex. partager avec ma famille…');
+    body.appendChild(el('p', { class: 'sectlabel', text: 'Pour la version Pro (assistant IA, agendas connectés…), tu paierais par mois :' }));
+    var prices = el('div', { class: 'chips' });
+    ['Rien', '1 à 2 €', '3 à 5 €', 'Plus de 5 €'].forEach(function (p) {
+      prices.appendChild(el('button', { type: 'button', class: 'chip', 'aria-pressed': fb.price === p ? 'true' : 'false', onclick: function () { fb.price = p; renderFb(); } }, p));
+    });
+    body.appendChild(prices);
+    body.appendChild(aiBtn('Valider mon avis', function () {
+      state.feedback = (state.feedback || []).concat([{ at: today(), rating: fb.rating, useful: fb.useful, annoying: fb.annoying, missing: fb.missing, price: fb.price }]);
+      state.settings.feedbackDone = today();
+      save(); render();
+      fb.sent = true; renderFb();
+    }, 'primary block'));
+  }
+  // Relance au bout de 7 jours d'utilisation
+  function feedbackNudge(container) {
+    var s = state.settings;
+    if (!s.firstUse || s.feedbackDone || (s.feedbackLater && s.feedbackLater > today())) return;
+    if (today() < addDays(s.firstUse, 7) || !state.items.length) return;
+    container.appendChild(el('div', { class: 'tip' },
+      el('p', { text: 'Ça fait une semaine que tu utilises Ma Journée ! 3 questions pour l\'améliorer ?' }),
+      el('button', { type: 'button', onclick: function () { s.feedbackLater = addDays(today(), 7); save(); render(); } }, 'Plus tard'),
+      el('button', { type: 'button', onclick: openFeedback }, 'Répondre')));
+  }
+
   // ================= Démarrage =================
+  if (!state.settings.firstUse) { state.settings.firstUse = today(); save(); }
+  if (!state.settings.onboarded && state.settings.home) { state.settings.onboarded = true; save(); } // utilisateurs déjà installés
   resetForm();
   render();
+  if (!state.settings.onboarded) setTimeout(openOnboarding, 400);
   setInterval(function () {
     checkReminders();
     if ($('#view-day').classList.contains('active') && viewMode === 'day' && currentDate === today()) render();

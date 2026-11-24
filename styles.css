@@ -323,6 +323,27 @@ summary{cursor:pointer;font-weight:600;min-height:32px}
 .wg-travel{position:absolute;left:40%;width:2px;background:repeating-linear-gradient(var(--muted) 0 3px,transparent 3px 6px);opacity:.6}
 .wg-now{position:absolute;left:0;right:0;height:2px;background:var(--hot-ink);z-index:2}
 .wg-now::before{content:"";position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--hot-ink)}
+.hours{margin:0;font-size:12px;font-weight:600;color:var(--muted)}
+.hours.closed{color:var(--hot-ink)}
+
+/* Premier lancement guidé et avis */
+.sheet.onb{height:auto}
+.onb-progress{display:flex;gap:6px}
+.onb-progress span{flex:1;height:4px;border-radius:2px;background:var(--line)}
+.onb-progress span.on{background:var(--accent)}
+.onb-lead{margin:0;font-size:15px;line-height:1.5;color:var(--muted)}
+.onb-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.onb-choice{min-height:72px;border:1px solid var(--line2);border-radius:14px;background:var(--card);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:15px;font-weight:600;color:var(--ink)}
+.onb-choice svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.onb-choice[aria-pressed="true"]{border:2px solid var(--accent);background:var(--accent-soft);color:var(--accent-ink)}
+.onb-nav{display:flex;gap:8px;align-items:center}
+.onb-nav .btn.primary{flex:1}
+.stars{display:flex;gap:6px}
+.stars button{flex:1;min-height:48px;border:1px solid var(--line2);border-radius:12px;background:var(--card);font-size:18px;font-weight:700;cursor:pointer;color:var(--ink)}
+.stars button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.fb textarea{width:100%;min-height:70px;border:1px solid var(--line2);border-radius:12px;padding:10px 12px;line-height:1.4;background:var(--bg);resize:vertical}
+.fb label{font-size:13px;font-weight:600;color:var(--label)}
+
 /* Assistant « Demande à Ma Journée » */
 .ai-btn{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid var(--accent);background:var(--accent-soft);color:var(--accent-ink);border-radius:14px;padding:10px 14px;min-height:56px;cursor:pointer;margin-top:4px}
 .ai-btn:hover{background:var(--card)}

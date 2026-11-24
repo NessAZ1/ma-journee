@@ -286,6 +286,13 @@
     </div>
 
     <div class="box">
+      <h2>Ton avis compte</h2>
+      <p class="hint">3 questions rapides pour nous dire ce qui marche et ce qui manque.</p>
+      <button type="button" class="btn primary block" id="fbBtn" aria-haspopup="dialog">Donner mon avis</button>
+      <button type="button" class="btn block" id="onbAgain" aria-haspopup="dialog">Revoir la présentation de départ</button>
+    </div>
+
+    <div class="box">
       <h2>Installer l'app</h2>
       <p class="hint">Sur iPhone : Partager › Sur l'écran d'accueil. Sur Android : menu ⋮ › Installer l'application.</p>
       <button type="button" class="btn block" id="installBtn" hidden>Installer sur cet appareil</button>
@@ -357,6 +364,33 @@
       <button type="button" class="icon-btn" id="sosClose" aria-label="Fermer">×</button>
     </header>
     <div id="sosBody" class="stack"></div>
+  </div>
+</dialog>
+
+<dialog id="onb" class="sheet onb" aria-labelledby="onbTitle">
+  <div class="sheet-inner">
+    <div class="onb-progress" id="onbProgress" aria-hidden="true"></div>
+    <header class="sheet-head">
+      <div>
+        <p class="eyebrow" id="onbStep">Bienvenue</p>
+        <h2 id="onbTitle">Bienvenue dans Ma Journée</h2>
+      </div>
+    </header>
+    <div id="onbBody" class="stack"></div>
+  </div>
+</dialog>
+
+<dialog id="fb" class="sheet fb" aria-labelledby="fbTitle">
+  <div class="sheet-inner">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <header class="sheet-head">
+      <div>
+        <p class="eyebrow">Ton avis</p>
+        <h2 id="fbTitle">Aide-nous à améliorer Ma Journée</h2>
+      </div>
+      <button type="button" class="icon-btn" id="fbClose" aria-label="Fermer">×</button>
+    </header>
+    <div id="fbBody" class="stack"></div>
   </div>
 </dialog>
 
