@@ -33,6 +33,10 @@
         <button class="icon-btn" id="nextDay" aria-label="Suivant">›</button>
       </div>
       <button class="link-btn" id="todayBtn">Revenir à aujourd'hui</button>
+      <button type="button" class="ai-btn" id="aiBtn" aria-haspopup="dialog">
+        <span class="ai-spark" aria-hidden="true">✨</span>
+        <span><strong>Demande à Ma Journée</strong><small>« J'ai 20 min de retard », « organise ma semaine »…</small></span>
+      </button>
     </header>
 
     <div id="dayPane" class="pane">
@@ -353,6 +357,32 @@
       <button type="button" class="icon-btn" id="sosClose" aria-label="Fermer">×</button>
     </header>
     <div id="sosBody" class="stack"></div>
+  </div>
+</dialog>
+
+<dialog id="ai" class="sheet ai" aria-labelledby="aiTitle">
+  <div class="ai-inner">
+    <header class="sheet-head">
+      <div>
+        <p class="eyebrow">✨ Ma Journée</p>
+        <h2 id="aiTitle">Bonjour ! Qu'est-ce qu'on organise aujourd'hui ?</h2>
+      </div>
+      <button type="button" class="icon-btn" id="aiClose" aria-label="Fermer">×</button>
+    </header>
+    <div id="aiChips" class="chips scroll ai-chips" role="group" aria-label="Suggestions"></div>
+    <div id="aiThread" class="ai-thread" aria-live="polite"></div>
+    <form id="aiForm" class="ai-form" autocomplete="off">
+      <label for="aiInput" class="visually-hidden">Votre demande</label>
+      <textarea id="aiInput" rows="1" placeholder="Ta demande…"></textarea>
+      <button type="button" id="aiMic" class="icon-btn ai-mic" aria-label="Dicter ma demande" hidden>
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg>
+      </button>
+      <button type="submit" class="btn primary" id="aiSend">Envoyer</button>
+    </form>
+    <div class="ai-foot">
+      <p class="hint">Compris directement sur ton téléphone. Rien n'est fait sans ta validation.</p>
+      <button type="button" class="link-btn" id="aiClear">Effacer l'historique</button>
+    </div>
   </div>
 </dialog>
 
