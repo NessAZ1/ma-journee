@@ -611,6 +611,9 @@
       if (!fav && /\b(boulot|bureau|taf|taff)\b/.test(n)) fav = findFav('Travail');
       if (/\b(travail|boulot|bureau|taf|taff)\b/.test(n) && !it.duration) it.duration = 480;
       if (!fav && /\b(ecole|creche|enfants)\b/.test(n)) fav = findFav('École');
+      if (!fav && /\b(salle|muscu|gym|fitness|piscine|club|entrainement)\b/.test(n)) fav = findFav('Sport');
+      if (fav && norm(fav.name) === 'sport' && !it.duration) it.duration = 60;
+      if (!fav && /\b(maison|domicile|chez moi)\b/.test(n) && state.settings.home) fav = { name: 'Domicile', label: state.settings.home.label, lat: state.settings.home.lat, lon: state.settings.home.lon };
       if (fav) { it.place = { name: fav.name, label: fav.label, lat: fav.lat, lon: fav.lon }; }
       var cat = CATS.filter(function (c) { return c.k.some(function (k) { return new RegExp('\\b' + k).test(n); }); })[0];
       if (REMOTE.test(n) && !cat) { it.online = true; if (!it.duration) it.duration = 15; }
@@ -763,7 +766,7 @@
   function itemCard(o) {
     var it = o.item, d = it.occ;
     var fixed = isFixed(it);
-    var where = it.online ? 'Sans déplacement' : (it.place ? it.place.name : (it.locationText || 'Lieu à préciser'));
+    var where = it.online ? 'Sans déplacement' : (it.place ? (norm(it.place.name) === 'sport' ? 'Salle de sport' : it.place.name) : (it.locationText || 'Lieu à préciser'));
     var meta = where + ' · ' + dur(+it.duration || 30) + (it.deadline && !fixed ? ' · avant ' + it.deadline : '') +
       (it.source && it.source !== 'manuel' && it.source !== 'exemple' ? ' · via ' + it.source : '');
     var detourNote = it.place && it.place.detour != null && !it.done
@@ -1882,7 +1885,7 @@
         : 'Indiquez votre point de départ dans Réglages pour que l\'app trouve le lieu le plus proche.'] });
     } else if (p.fav) {
       setPresetHint({ warn: true, parts: ['Votre adresse « ' + p.fav + ' » n\'est pas encore enregistrée. ',
-        el('button', { type: 'button', class: 'link-btn', 'data-goto': 'settings', onclick: function () { $('#favPreset').value = p.fav; syncFavPreset(); } }, 'L\'ajouter dans Réglages'),
+        el('button', { type: 'button', class: 'link-btn', onclick: function () { editPlace(p.fav); } }, 'L\'ajouter dans Mes lieux'),
         ' ou cherchez-la ci-dessous.'] });
     }
     showPicked(); syncKind(); renderPresets();
@@ -1914,16 +1917,23 @@
   function renderFavChips() {
     var box = $('#favChips'); box.innerHTML = '';
     var list = [];
-    if (state.settings.home) list.push(Object.assign({ name: 'Maison' }, state.settings.home, { name: 'Maison' }));
+    if (state.settings.home) list.push(Object.assign({}, state.settings.home, { name: 'Domicile' }));
     list = list.concat(state.favorites);
+    var shown = function (n) { return norm(n) === 'sport' ? 'Salle de sport' : n; };
     list.forEach(function (f) {
       var on = !!pickedPlace && pickedPlace.lat === f.lat && pickedPlace.lon === f.lon;
       box.appendChild(el('button', { type: 'button', class: 'chip', 'aria-pressed': on ? 'true' : 'false', onclick: function () {
         pickedPlace = { name: f.name, label: f.label, lat: f.lat, lon: f.lon };
-        $('#fPlace').value = f.name; $('#fOnline').checked = false; $('#fPlaceResults').innerHTML = '';
+        $('#fPlace').value = shown(f.name); $('#fOnline').checked = false; $('#fPlaceResults').innerHTML = '';
         showPicked();
-      } }, f.name));
+      } }, shown(f.name)));
     });
+    // Lieux habituels pas encore définis : un raccourci pour les ajouter
+    [['Travail', 'Travail'], ['Sport', 'Salle de sport']].forEach(function (k) {
+      if (findFav(k[0])) return;
+      box.appendChild(el('button', { type: 'button', class: 'chip ghost', onclick: function () { editPlace(k[0]); } }, '+ ' + k[1]));
+    });
+    if (!state.settings.home) box.appendChild(el('button', { type: 'button', class: 'chip ghost', onclick: function () { editPlace('home'); } }, '+ Domicile'));
   }
   $('#favSaveBtn').addEventListener('click', function () {
     var name = $('#favName').value.trim();
@@ -2084,35 +2094,98 @@
   // ================= Réglages =================
   function renderSettings() {
     var s = state.settings;
-    $('#homeLabel').textContent = s.home ? 'Départ : ' + s.home.label : 'Aucune adresse enregistrée.';
+    renderPlaces();
     $('#sMode').value = s.mode; $('#sStart').value = s.dayStart; $('#sEnd').value = s.dayEnd; $('#sBuffer').value = s.buffer;
     $('#sName').value = s.name || '';
     $('#sMargins').checked = s.smartMargins !== false;
     $('#backupInfo').textContent = s.lastBackup ? 'Dernière sauvegarde : ' + frDate(s.lastBackup, { day: 'numeric', month: 'long', year: 'numeric' }) + '.' : 'Aucune sauvegarde pour l\'instant.';
-    var fl = $('#favList'); fl.innerHTML = '';
-    if (!state.favorites.length) fl.appendChild(el('p', { class: 'hint', text: 'Aucun lieu favori. Choisissez un lieu dans « Ajouter », puis « Ajouter aux favoris ».' }));
-    state.favorites.forEach(function (f) {
-      fl.appendChild(el('div', { class: 'favrow' },
-        el('div', null, el('strong', { text: f.name }), el('small', { text: f.label })),
-        el('button', { class: 'btn danger', type: 'button', onclick: function () {
-          state.favorites = state.favorites.filter(function (x) { return x.id !== f.id; }); save(); renderSettings();
-        } }, 'Retirer')));
-    });
     renderNotifState();
   }
-  function syncFavPreset() { $('#favCustomWrap').hidden = $('#favPreset').value !== ''; }
-  $('#favPreset').addEventListener('change', syncFavPreset);
-  setupSearch($('#favAddr'), $('#favAddrBtn'), $('#favResults'), function (p) {
-    var name = $('#favPreset').value || $('#favCustom').value.trim();
-    if (!name) { $('#favCustom').focus(); toast('Donnez un nom à ce lieu.'); return; }
-    state.favorites = state.favorites.filter(function (f) { return norm(f.name) !== norm(name); });
-    state.favorites.push({ id: uid(), name: name, label: p.label, lat: p.lat, lon: p.lon });
-    save(); $('#favAddr').value = ''; $('#favCustom').value = ''; renderSettings(); toast('« ' + name + ' » enregistré');
-  });
 
-  setupSearch($('#homeInput'), $('#homeBtn'), $('#homeResults'), function (p) {
-    state.settings.home = p; save(); renderSettings(); render(); $('#homeInput').value = ''; toast('Point de départ enregistré');
-  });
+  // ================= Mes lieux : Domicile, Travail, Salle de sport, École + lieux perso =================
+  var PLACE_ICONS = {
+    home: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>',
+    work: '<path d="M4 8h16v11H4zM9 8V5h6v3M4 13h16"/>',
+    sport: '<path d="M6 8v8M18 8v8M3 10v4M21 10v4M6 12h12"/>',
+    school: '<path d="M3 9l9-5 9 5-9 5zM7 11v5c3 2 7 2 10 0v-5"/>',
+    pin: '<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>'
+  };
+  var PLACE_SLOTS = [
+    { key: 'home', name: 'Domicile', icon: 'home', hint: 'Ton point de départ et d\'arrivée' },
+    { key: 'Travail', name: 'Travail', icon: 'work', hint: 'Bureau, lieu de travail' },
+    { key: 'Sport', name: 'Salle de sport', icon: 'sport', hint: 'Salle, piscine, club' },
+    { key: 'École', name: 'École / crèche', icon: 'school', hint: 'Études ou enfants' }
+  ];
+  var placeEdit = null; // clé du lieu en cours de modification ('home', 'Travail', 'Sport', 'École', un id, ou 'new')
+  function placeIcon(name) {
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true'); svg.innerHTML = PLACE_ICONS[name] || PLACE_ICONS.pin;
+    return el('span', { class: 'place-ic' }, svg);
+  }
+  function savePlace(key, p, customName) {
+    if (key === 'home') { state.settings.home = p; }
+    else {
+      var name = key === 'new' ? customName : (PLACE_SLOTS.some(function (s) { return s.key === key; }) ? key : null);
+      var existing = name ? null : state.favorites.filter(function (f) { return f.id === key; })[0];
+      if (existing) { existing.label = p.label; existing.lat = p.lat; existing.lon = p.lon; name = existing.name; }
+      else {
+        state.favorites = state.favorites.filter(function (f) { return norm(f.name) !== norm(name); });
+        state.favorites.push({ id: uid(), name: name, label: p.label, lat: p.lat, lon: p.lon });
+      }
+      // les étapes déjà liées à ce lieu suivent la nouvelle adresse
+      state.items.forEach(function (i) { if (i.place && norm(i.place.name) === norm(name)) { i.place = { name: name, label: p.label, lat: p.lat, lon: p.lon }; } });
+    }
+    placeEdit = null; save(); renderSettings(); render();
+    toast('« ' + (key === 'home' ? 'Domicile' : (customName || (PLACE_SLOTS.filter(function (s) { return s.key === key; })[0] || {}).name || 'Lieu')) + ' » enregistré');
+  }
+  function placeEditor(key, withName) {
+    var nameInput = withName ? el('input', { id: 'newPlaceName', placeholder: 'Nom (ex. Chez mamie, Piscine)', 'aria-label': 'Nom du lieu' }) : null;
+    var search = onbSearch('Adresse ou nom du lieu', function (p) {
+      var nm = nameInput ? nameInput.value.trim() : '';
+      if (withName && !nm) { nameInput.focus(); toast('Donne un nom à ce lieu.'); return; }
+      savePlace(key, p, nm);
+    });
+    return el('div', { class: 'place-edit' }, nameInput, search, aiBtn('Annuler', function () { placeEdit = null; renderPlaces(); }, 'block'));
+  }
+  function placeRow(icon, title, sub, isSet, key, onRemove) {
+    var row = el('div', { class: 'place-row' + (isSet ? '' : ' unset') },
+      placeIcon(icon),
+      el('div', { class: 'place-tx' }, el('strong', { text: title }), el('small', { text: sub })),
+      el('div', { class: 'place-act' },
+        aiBtn(isSet ? 'Modifier' : 'Ajouter', function () { placeEdit = key; renderPlaces(); var i = $('#placesList .place-edit input'); if (i) i.focus(); }, isSet ? '' : 'primary'),
+        isSet && onRemove ? el('button', { type: 'button', class: 'icon-btn small', 'aria-label': 'Retirer ' + title, onclick: onRemove }, '×') : null));
+    var wrap = el('div', { class: 'place-wrap' }, row);
+    if (placeEdit === key) wrap.appendChild(placeEditor(key, key === 'new'));
+    return wrap;
+  }
+  function renderPlaces() {
+    var box = $('#placesList'); if (!box) return;
+    box.innerHTML = '';
+    var s = state.settings;
+    PLACE_SLOTS.forEach(function (slot) {
+      if (slot.key === 'home') {
+        box.appendChild(placeRow(slot.icon, slot.name, s.home ? s.home.label : 'Pas encore défini · ' + slot.hint, !!s.home, 'home', null));
+        return;
+      }
+      var f = findFav(slot.key);
+      box.appendChild(placeRow(slot.icon, slot.name, f ? f.label : 'Pas encore défini · ' + slot.hint, !!f, slot.key, f ? function () {
+        state.favorites = state.favorites.filter(function (x) { return x.id !== f.id; }); save(); renderSettings();
+      } : null));
+    });
+    state.favorites.filter(function (f) { return !PLACE_SLOTS.some(function (sl) { return norm(sl.key) === norm(f.name); }); }).forEach(function (f) {
+      box.appendChild(placeRow('pin', f.name, f.label, true, f.id, function () {
+        state.favorites = state.favorites.filter(function (x) { return x.id !== f.id; }); save(); renderSettings();
+      }));
+    });
+    if (placeEdit === 'new') box.appendChild(el('div', { class: 'place-wrap' }, el('p', { class: 'sectlabel', text: 'Nouveau lieu' }), placeEditor('new', true)));
+    $('#addPlaceBtn').hidden = placeEdit === 'new';
+  }
+  $('#addPlaceBtn').addEventListener('click', function () { placeEdit = 'new'; renderPlaces(); var i = $('#newPlaceName'); if (i) i.focus(); });
+  // Ouvre Réglages directement sur un lieu à définir (depuis un modèle ou l'assistant)
+  function editPlace(key) {
+    placeEdit = key; go('settings');
+    setTimeout(function () { var b = $('#placesBox'); if (b) b.scrollIntoView({ block: 'start' }); var i = $('#placesList .place-edit input'); if (i) i.focus(); }, 80);
+  }
   [['#sMode', 'mode'], ['#sStart', 'dayStart'], ['#sEnd', 'dayEnd'], ['#sBuffer', 'buffer'], ['#sName', 'name']].forEach(function (p) {
     $(p[0]).addEventListener('change', function () { state.settings[p[1]] = p[1] === 'buffer' ? (+this.value || 0) : this.value.trim(); save(); render(); });
   });
@@ -2908,7 +2981,7 @@
     ['driving', 'Voiture', '<path d="M5 16V11l2-5h10l2 5v5M3 16h18v3H3zM5 11h14"/><circle cx="7.5" cy="16" r="1"/><circle cx="16.5" cy="16" r="1"/>']
   ];
   function openOnboarding() {
-    onb = { step: 0, home: state.settings.home || null, work: findFav('Travail') || findFav('École') || null, workKind: 'Travail', addHours: true, wStart: '09:00', wEnd: '18:00', mode: state.settings.mode || 'transit' };
+    onb = { step: 0, home: state.settings.home || null, work: findFav('Travail') || findFav('École') || null, gym: findFav('Sport') || null, workKind: findFav('Travail') || !findFav('École') ? 'Travail' : 'École', addHours: !state.items.some(function (i) { return i.repeat !== 'none'; }), wStart: '09:00', wEnd: '18:00', mode: state.settings.mode || 'transit' };
     renderOnb();
     var dl = $('#onb');
     if (!dl.open) { if (dl.showModal) dl.showModal(); else dl.setAttribute('open', ''); }
@@ -2966,7 +3039,12 @@
         body.appendChild(el('label', { class: 'check', for: 'onbHours' }, cb, ' Ajouter mes horaires au planning, du lundi au vendredi'));
         body.appendChild(el('div', { class: 'grid2' }, el('div', null, s1), el('div', null, s2)));
       }
-      body.appendChild(el('div', { class: 'onb-nav' }, aiBtn('Pas de lieu fixe', function () { onb.work = null; next(); }), el('button', { type: 'button', class: 'btn primary', disabled: onb.work ? null : 'disabled', onclick: next }, 'Continuer')));
+      body.appendChild(el('p', { class: 'sectlabel', text: 'Et ta salle de sport ? (facultatif)' }));
+      if (onb.gym) body.appendChild(el('p', { class: 'picked', text: 'Salle de sport : ' + onb.gym.label }));
+      body.appendChild(onbSearch(onb.gym ? 'Changer de salle' : 'Nom ou adresse de ta salle, piscine, club…', function (p) { onb.gym = p; renderOnb(); }));
+      body.appendChild(el('div', { class: 'onb-nav' },
+        aiBtn(onb.work || onb.gym ? 'Plus tard' : 'Pas de lieu fixe', function () { if (!onb.work && !onb.gym) { onb.work = null; } next(); }),
+        el('button', { type: 'button', class: 'btn primary', disabled: onb.work || onb.gym ? null : 'disabled', onclick: next }, 'Continuer')));
       return;
     }
     if (onb.step === 3) {
@@ -2996,6 +3074,10 @@
     if (!skipped) {
       if (onb.home) state.settings.home = onb.home;
       state.settings.mode = onb.mode;
+      if (onb.gym) {
+        state.favorites = state.favorites.filter(function (f) { return norm(f.name) !== 'sport'; });
+        state.favorites.push({ id: uid(), name: 'Sport', label: onb.gym.label, lat: onb.gym.lat, lon: onb.gym.lon });
+      }
       if (onb.work) {
         var name = onb.workKind;
         state.favorites = state.favorites.filter(function (f) { return norm(f.name) !== norm(name); });

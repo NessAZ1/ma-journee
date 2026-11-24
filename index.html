@@ -207,40 +207,11 @@
       <h1>Mes lieux, mes habitudes, mes agendas</h1>
     </header>
 
-    <div class="box">
-      <h2>Point de départ</h2>
-      <p class="hint" id="homeLabel">Aucune adresse enregistrée.</p>
-      <div class="searchrow">
-        <input id="homeInput" placeholder="Votre adresse (domicile)" aria-label="Adresse de départ">
-        <button type="button" class="btn" id="homeBtn">Chercher</button>
-      </div>
-      <div id="homeResults" class="results"></div>
-    </div>
-
-    <div class="box">
-      <h2>Mes lieux favoris</h2>
-      <p class="hint">Travail, école, salle de sport… Enregistrez-les une fois : les modèles et l'ajout rapide les utilisent tout seuls.</p>
-      <div id="favList" class="stack"></div>
-      <div class="grid2">
-        <div>
-          <label for="favPreset">Lieu</label>
-          <select id="favPreset">
-            <option>Travail</option>
-            <option>École</option>
-            <option>Sport</option>
-            <option value="">Autre…</option>
-          </select>
-        </div>
-        <div id="favCustomWrap" hidden>
-          <label for="favCustom">Nom</label>
-          <input id="favCustom" placeholder="Ex. Chez mamie">
-        </div>
-      </div>
-      <div class="searchrow">
-        <input id="favAddr" placeholder="Adresse de ce lieu" aria-label="Adresse du lieu favori">
-        <button type="button" class="btn" id="favAddrBtn">Chercher</button>
-      </div>
-      <div id="favResults" class="results"></div>
+    <div class="box" id="placesBox">
+      <h2>Mes lieux</h2>
+      <p class="hint">Enregistre-les une fois : les trajets, les modèles, l'ajout rapide et l'assistant les utilisent tout seuls.</p>
+      <div id="placesList" class="stack"></div>
+      <button type="button" class="btn block" id="addPlaceBtn">+ Ajouter un autre lieu</button>
     </div>
 
     <div class="box">
