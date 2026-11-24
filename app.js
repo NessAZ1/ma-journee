@@ -251,10 +251,17 @@
     var pos = s.home;
     var out = [];
 
+    var ongEnd = 0, ongPlace = null; // étape déjà commencée (ex. travail) : on y retourne après un rendez-vous pris pendant ce temps
     fixed.concat([null]).forEach(function (f) {
       var limit = f ? toMin(f.start) - marginInfo(f).m : end;
       var fPlace = f ? placeOf(f) : null;
+      var skipFill = false;
+      if (ongEnd > cur) {
+        if (f && toMin(f.start) < ongEnd) skipFill = true; // pendant le travail : rien à caser avant ce rendez-vous
+        else { cur = ongEnd; if (ongPlace) pos = ongPlace; ongEnd = 0; }
+      }
       for (;;) {
+        if (skipFill) break;
         var best = null;
         flex.forEach(function (t) {
           var tp = placeOf(t);
@@ -285,6 +292,12 @@
         var st = toMin(f.start), fd = +f.duration || 30;
         if (isToday && st + fd <= cur) { // déjà passé
           out.push({ item: f, start: st, end: st + fd, travel: 0, past: true });
+          if (fPlace) pos = fPlace;
+          return;
+        }
+        if (isToday && !f.done && st < nowMin() - 30) { // commencé depuis plus de 30 min : tu y es déjà, pas de retard
+          out.push({ item: f, start: st, end: st + fd, travel: 0, ongoing: true });
+          ongEnd = Math.max(ongEnd, st + fd); ongPlace = fPlace || ongPlace;
           if (fPlace) pos = fPlace;
           return;
         }
@@ -870,6 +883,7 @@
     makeSwipe(swipe, card, function () { markDone(it.id, d); }, function () { openSheet(it.id, d, 'move'); });
 
     var travelText = null;
+    if (o.ongoing) travelText = el('p', { class: 'travel', text: 'En cours, jusqu\'à ' + fmt(o.end) });
     if (o.travel && !o.past) {
       travelText = el('p', { class: 'travel' + (o.late ? ' late' : '') },
         (o.late ? (o.lateBy ? 'Retard prévu : ' + o.lateBy + ' min · ' : 'Ce sera juste · ') : '') + '≈ ' + dur(o.travel) + ' ' + MODE_LABEL[state.settings.mode] +
@@ -1033,7 +1047,12 @@
     var box = $('#nextUp'); box.innerHTML = ''; box.hidden = true;
     if (currentDate !== today()) return;
     var n = nowMin();
-    var next = plan.out.filter(function (o) { return !o.item.done && !o.past && o.end > n; })[0];
+    var next = plan.out.filter(function (o) { return !o.item.done && !o.past && !o.ongoing && o.end > n; })[0];
+    if (!next) {
+      var cur = plan.out.filter(function (o) { return o.ongoing && !o.item.done; })[0];
+      if (cur) { box.hidden = false; box.appendChild(el('div', null, el('small', { text: 'En cours' }), el('strong', { text: cur.item.title }), el('span', { text: 'Jusqu\'à ' + fmt(cur.end) + ', ensuite rien de prévu' }))); }
+      return;
+    }
     if (!next) return;
     var leave = next.travel ? (next.leaveAt || next.start - next.travel) : next.start;
     var when = leave <= n ? (next.travel ? 'Partez maintenant' : 'Maintenant') : (next.travel ? 'Partir à ' + fmt(leave) : 'À ' + fmt(next.start));
@@ -1123,7 +1142,7 @@
     if (d !== today() || !isFixed(it) || it.done) return 0;
     var o = planDay(d).out.filter(function (x) { return x.item.id === it.id; })[0];
     var n = nowMin(), st = toMin(it.start);
-    if (!o || n >= st + (+it.duration || 30)) return 0;
+    if (!o || o.ongoing || n >= st + (+it.duration || 30)) return 0;
     var late = Math.max(n + (o.travel || 0) - st, o.lateBy || 0);
     return late > 0 ? Math.ceil(late / 5) * 5 : 0;
   }
@@ -1381,7 +1400,7 @@
     before.out.forEach(function (o) { beforeStart[o.item.id] = o.start; });
     var lines = [];
     after.out.forEach(function (o) {
-      if (o.past || o.item.done) return;
+      if (o.past || o.ongoing || o.item.done) return;
       if (isFixed(o.item)) {
         if (o.lateBy > 0) lines.push({ kind: 'warn', id: o.item.id, text: o.item.title + ' à ' + o.item.start + ' : retard d\'environ ' + o.lateBy + ' min' });
         else lines.push({ kind: 'keep', text: o.item.title + ' à ' + o.item.start + ' conservé' });
@@ -2586,11 +2605,32 @@
     }).then(function () { aiLogSave(); aiRender(); });
   }
   function aiBtn(label, fn, cls) { return el('button', { type: 'button', class: 'btn ' + (cls || ''), onclick: fn }, label); }
+  // Prévenir quelqu'un : en un tap si on a son numéro (la messagerie s'ouvre avec le texte prêt, il reste à appuyer sur Envoyer)
   function aiNotifyBtn(id, d, tpl, label, fromDate, fromStart) {
-    return aiBtn(label || 'Prévenir', function () {
+    var openEditor = function () {
       openSheet(id, d, 'notify', tpl);
       if (fromDate) { sheet.fromDate = fromDate; sheet.fromStart = fromStart; renderSheet(); }
-    }, 'warn');
+    };
+    var it = byId(id) || state.items.filter(function (x) { return x.id === id; })[0];
+    var c = it ? contactOf(it) : { phone: '', email: '' };
+    if (!it || (!c.phone && !c.email)) {
+      return el('div', { class: 'stack' }, aiBtn(label || 'Préparer le message', openEditor, 'warn'),
+        el('small', { class: 'hint', text: 'Ajoute le numéro du contact dans ce message pour l\'envoyer en un tap la prochaine fois.' }));
+    }
+    var keep = { fromDate: sheet.fromDate, fromStart: sheet.fromStart };
+    if (fromDate) { sheet.fromDate = fromDate; sheet.fromStart = fromStart; }
+    var txt = messageFor(tpl, it, d);
+    sheet.fromDate = keep.fromDate; sheet.fromStart = keep.fromStart;
+    var ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    var who = it.place && it.place.name ? it.place.name : it.title;
+    var main = c.phone
+      ? el('a', { class: 'btn primary block', href: 'sms:' + c.phone.replace(/\s/g, '') + (ios ? '&' : '?') + 'body=' + encodeURIComponent(txt) }, 'Envoyer le SMS à ' + who)
+      : el('a', { class: 'btn primary block', href: 'mailto:' + c.email + '?subject=' + encodeURIComponent('Mon rendez-vous') + '&body=' + encodeURIComponent(txt) }, 'Envoyer l\'e-mail à ' + who);
+    return el('div', { class: 'stack' },
+      el('p', { class: 'ai-preview', text: '« ' + txt + ' »' }),
+      main,
+      el('small', { class: 'hint', text: 'Ta messagerie s\'ouvre avec le texte déjà écrit : il ne reste qu\'à appuyer sur Envoyer.' }),
+      aiBtn('Modifier le message, WhatsApp ou appeler', openEditor, 'block'));
   }
 
   // ---------- Petits outils de compréhension ----------
@@ -2701,9 +2741,13 @@
         pv.lines.filter(function (l) { return l.kind === 'warn'; }).forEach(function (l) {
           after.push(el('div', { class: 'ai-opt' }, el('span', { text: l.text }), aiNotifyBtn(l.id, t, 'late', 'Prévenir de mon retard')));
         });
-        var nextFixed = planDay(t).out.filter(function (o) { return !o.past && !o.item.done && isFixed(o.item); })[0];
+        var nextFixed = planDay(t).out.filter(function (o) { return !o.past && !o.ongoing && !o.item.done && isFixed(o.item); })[0];
         if (!after.length && nextFixed && lateMinutes(nextFixed.item, t)) after.push(el('div', { class: 'ai-opt' }, el('span', { text: nextFixed.item.title + ' à ' + nextFixed.item.start }), aiNotifyBtn(nextFixed.item.id, t, 'late', 'Prévenir de mon retard')));
-        return { text: 'C\'est fait : ta journée est réorganisée' + (after.length ? '. Tu peux prévenir les personnes concernées, le message est prêt (c\'est toi qui l\'envoies).' : '.'), after: after };
+        var txt = 'C\'est fait : ta journée est réorganisée.';
+        if (after.length) txt += ' Prévenir en un tap :';
+        else if (nextFixed) txt += ' Ton prochain rendez-vous (' + nextFixed.item.title + ' à ' + nextFixed.item.start + ') tient toujours : personne à prévenir.';
+        else txt += ' Aucun rendez-vous fixe n\'est touché : personne à prévenir.';
+        return { text: txt, after: after };
       }
     });
   }

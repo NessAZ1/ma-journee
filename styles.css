@@ -399,5 +399,7 @@ summary{cursor:pointer;font-weight:600;min-height:32px}
 .ai-mic.listening{background:var(--hot-bg);border-color:var(--hot-ink);color:var(--hot-ink)}
 .ai-foot{display:flex;align-items:center;gap:8px;flex-shrink:0}
 .ai-foot .hint{flex:1;min-width:0;font-size:12px}
+.ai-preview{margin:0;font-size:14px;line-height:1.45;font-style:italic;color:var(--ink);background:var(--sunk);border-radius:10px;padding:8px 10px}
+.ai-result{margin:0;font-size:14px;line-height:1.45}
 .ai-typing{align-self:flex-start;color:var(--muted);font-size:13px}
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
