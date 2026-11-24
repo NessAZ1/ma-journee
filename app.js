@@ -457,35 +457,93 @@
     toast(t);
   }
 
-  function setupSearch(input, btn, results, onPick) {
-    function run() {
-      var q = input.value.trim();
-      if (!q) { input.focus(); return; }
-      results.innerHTML = '';
-      results.appendChild(el('p', { class: 'hint', text: 'Recherche en cours…' }));
-      geocode(q).then(function (list) {
-        results.innerHTML = '';
-        if (!list.length) { results.appendChild(el('p', { class: 'hint', text: 'Aucun résultat. Ajoutez la ville ou le nom de la rue.' })); return; }
-        var h = state.settings.home;
-        list.forEach(function (p) {
-          var dist = h ? ' · ' + (km(h, p) < 1 ? Math.round(km(h, p) * 1000) + ' m' : km(h, p).toFixed(1).replace('.', ',') + ' km') : '';
-          results.appendChild(el('button', { type: 'button', class: 'result', onclick: function () { results.innerHTML = ''; onPick(p); } },
-            el('strong', { text: p.name }), el('small', { text: p.label + dist })));
+  // ---------- Recherche intelligente : entreprises, adresses et lieux ----------
+  // 1. Annuaire officiel des entreprises (recherche-entreprises.api.gouv.fr) : retrouve une société par son nom, avec ses établissements ouverts
+  // 2. Base Adresse Nationale (data.geopf.fr) : adresses françaises, suggestions pendant la frappe
+  // 3. OpenStreetMap (Nominatim) : commerces, lieux publics… seulement sur « Chercher » (pas de suggestion en direct, règle d'usage)
+  function titleCase(s) { return (s || '').toLowerCase().replace(/(^|[\s'’(-])([a-zà-ÿ])/g, function (m, a, b) { return a + b.toUpperCase(); }); }
+  function companySearch(q) {
+    return fetch('https://recherche-entreprises.api.gouv.fr/search?per_page=5&q=' + encodeURIComponent(q))
+      .then(function (r) { return r.ok ? r.json() : { results: [] }; })
+      .then(function (j) {
+        var out = [];
+        (j.results || []).forEach(function (c) {
+          var name = c.nom_complet || c.nom_raison_sociale || '';
+          var ets = (c.matching_etablissements && c.matching_etablissements.length ? c.matching_etablissements : [c.siege]).filter(function (e) { return e && e.etat_administratif !== 'F' && e.latitude && e.longitude; });
+          ets.slice(0, 4).forEach(function (e) {
+            out.push({ name: name, label: titleCase(e.adresse || ''), lat: +e.latitude, lon: +e.longitude, kind: e.est_siege ? 'Entreprise · siège' : 'Entreprise · établissement' });
+          });
         });
-      }).catch(function () {
-        results.innerHTML = '';
-        results.appendChild(el('p', { class: 'hint', text: 'Recherche impossible (pas de connexion ?). Le lieu sera enregistré tel quel.' }));
+        return out.slice(0, 6);
+      }).catch(function () { return []; });
+  }
+  function addressSearch(q) {
+    var h = state.settings.home;
+    return fetch('https://data.geopf.fr/geocodage/search?limit=5&autocomplete=1&q=' + encodeURIComponent(q) + (h ? '&lat=' + h.lat + '&lon=' + h.lon : ''))
+      .then(function (r) { return r.ok ? r.json() : { features: [] }; })
+      .then(function (j) {
+        return (j.features || []).filter(function (f) { return (f.properties.score || 0) >= 0.35; }).map(function (f) {
+          return { name: f.properties.name || f.properties.label, label: f.properties.label, lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], kind: 'Adresse' };
+        });
+      }).catch(function () { return []; });
+  }
+  function mergeResults(q, companies, addresses, places) {
+    var nq = norm(q), hasDigit = /\d/.test(q);
+    var goodCo = companies.filter(function (c) { return norm(c.name).indexOf(nq) >= 0; });
+    var otherCo = companies.filter(function (c) { return goodCo.indexOf(c) < 0; });
+    var order = hasDigit ? addresses.concat(goodCo, places, otherCo) : goodCo.concat(places, addresses, otherCo);
+    var out = [];
+    order.forEach(function (p) {
+      if (out.some(function (o) { return km(o, p) < 0.03 && norm(o.name) === norm(p.name); })) return;
+      out.push(p);
+    });
+    return out.slice(0, 8);
+  }
+  function setupSearch(input, btn, results, onPick) {
+    var timer = null, seq = 0;
+    function hint(t) { return el('p', { class: 'hint', text: t }); }
+    function show(list, full) {
+      results.innerHTML = '';
+      if (!list.length) {
+        if (full) results.appendChild(hint('Aucun résultat. Essaie avec la ville, la rue, ou le nom exact de l\'entreprise.'));
+        return;
+      }
+      var h = state.settings.home;
+      list.forEach(function (p) {
+        var dist = h ? ' · ' + (km(h, p) < 1 ? Math.round(km(h, p) * 1000) + ' m' : km(h, p).toFixed(1).replace('.', ',') + ' km') : '';
+        results.appendChild(el('button', { type: 'button', class: 'result', onclick: function () {
+          results.innerHTML = ''; clearTimeout(timer); seq++;
+          var clean = Object.assign({}, p); delete clean.kind; delete clean._d;
+          onPick(clean);
+        } }, el('span', { class: 'rtag', text: p.kind || 'Lieu' }), el('strong', { text: p.name }), el('small', { text: p.label + dist })));
+      });
+      if (!full) results.appendChild(hint('Pas dans la liste ? Appuie sur « Chercher » pour chercher aussi les commerces et lieux publics.'));
+    }
+    function suggest(full) {
+      var q = input.value.trim();
+      if (q.length < 3) { if (full) input.focus(); results.innerHTML = ''; return; }
+      var my = ++seq;
+      if (full) { results.innerHTML = ''; results.appendChild(hint('Recherche en cours…')); }
+      var jobs = [companySearch(q), addressSearch(q)];
+      if (full) jobs.push(geocode(q).then(function (l) { return l.map(function (x) { return Object.assign(x, { kind: 'Lieu' }); }); }).catch(function () { return []; }));
+      Promise.all(jobs).then(function (r) {
+        if (my !== seq) return; // une recherche plus récente a été lancée
+        show(mergeResults(q, r[0], r[1], r[2] || []), full);
       });
     }
-    btn.addEventListener('click', run);
-    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); run(); } });
+    input.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(function () { suggest(false); }, 350); });
+    btn.addEventListener('click', function () { clearTimeout(timer); suggest(true); });
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); suggest(true); } });
   }
 
   function findAddress(id, btn) {
     var it = byId(id); if (!it) return Promise.resolve(false);
     if (btn) { btn.disabled = true; btn.textContent = 'Recherche…'; }
-    return geocode(it.locationText).then(function (list) {
-      if (list.length) { it.place = list[0]; save(); render(); toast('Adresse trouvée : ' + list[0].name); return true; }
+    var q = it.locationText;
+    // une vraie adresse (avec un numéro) → Base Adresse Nationale d'abord ; sinon OpenStreetMap
+    var first = /\d/.test(q) ? addressSearch(q).then(function (l) { return l.length ? l : geocode(q); }) : geocode(q).then(function (l) { return l.length ? l : addressSearch(q); });
+    return first.then(function (list) {
+      if (list.length) { var p = Object.assign({}, list[0]); delete p.kind; it.place = p; save(); render(); toast('Adresse trouvée : ' + p.name); return true; }
       toast('Adresse introuvable. Modifiez le lieu à la main.');
       if (btn) { btn.disabled = false; btn.textContent = "Trouver l'adresse"; }
       return false;
@@ -1878,6 +1936,7 @@
     if (fav) {
       pickedPlace = { name: fav.name, label: fav.label, lat: fav.lat, lon: fav.lon };
       $('#fPlace').value = fav.name;
+      if (p.fav === 'Travail' && state.favorites.some(isWorkFav)) setPresetHint({ parts: ['Tu as plusieurs lieux de travail : touche juste au-dessus celui d\'aujourd\'hui.'] });
     } else if (p.q) {
       presetQuery = p.q;
       setPresetHint({ parts: [state.settings.home
@@ -2125,12 +2184,15 @@
   function savePlace(key, p, customName) {
     if (key === 'home') { state.settings.home = p; }
     else {
-      var name = key === 'new' ? customName : (PLACE_SLOTS.some(function (s) { return s.key === key; }) ? key : null);
+      var isNew = key === 'new' || key === 'newwork';
+      var name = isNew ? customName : (PLACE_SLOTS.some(function (s) { return s.key === key; }) ? key : null);
       var existing = name ? null : state.favorites.filter(function (f) { return f.id === key; })[0];
       if (existing) { existing.label = p.label; existing.lat = p.lat; existing.lon = p.lon; name = existing.name; }
       else {
         state.favorites = state.favorites.filter(function (f) { return norm(f.name) !== norm(name); });
-        state.favorites.push({ id: uid(), name: name, label: p.label, lat: p.lat, lon: p.lon });
+        var fav = { id: uid(), name: name, label: p.label, lat: p.lat, lon: p.lon };
+        if (key === 'newwork' || key === 'Travail') fav.kind = 'work';
+        state.favorites.push(fav);
       }
       // les étapes déjà liées à ce lieu suivent la nouvelle adresse
       state.items.forEach(function (i) { if (i.place && norm(i.place.name) === norm(name)) { i.place = { name: name, label: p.label, lat: p.lat, lon: p.lon }; } });
@@ -2139,7 +2201,7 @@
     toast('« ' + (key === 'home' ? 'Domicile' : (customName || (PLACE_SLOTS.filter(function (s) { return s.key === key; })[0] || {}).name || 'Lieu')) + ' » enregistré');
   }
   function placeEditor(key, withName) {
-    var nameInput = withName ? el('input', { id: 'newPlaceName', placeholder: 'Nom (ex. Chez mamie, Piscine)', 'aria-label': 'Nom du lieu' }) : null;
+    var nameInput = withName ? el('input', { id: 'newPlaceName', placeholder: key === 'newwork' ? 'Nom (ex. Client Dupont, Cabinet 2, Agence Lyon)' : 'Nom (ex. Chez mamie, Piscine)', 'aria-label': 'Nom du lieu' }) : null;
     var search = onbSearch('Adresse ou nom du lieu', function (p) {
       var nm = nameInput ? nameInput.value.trim() : '';
       if (withName && !nm) { nameInput.focus(); toast('Donne un nom à ce lieu.'); return; }
@@ -2155,9 +2217,10 @@
         aiBtn(isSet ? 'Modifier' : 'Ajouter', function () { placeEdit = key; renderPlaces(); var i = $('#placesList .place-edit input'); if (i) i.focus(); }, isSet ? '' : 'primary'),
         isSet && onRemove ? el('button', { type: 'button', class: 'icon-btn small', 'aria-label': 'Retirer ' + title, onclick: onRemove }, '×') : null));
     var wrap = el('div', { class: 'place-wrap' }, row);
-    if (placeEdit === key) wrap.appendChild(placeEditor(key, key === 'new'));
+    if (placeEdit === key) wrap.appendChild(placeEditor(key, key === 'new' || key === 'newwork'));
     return wrap;
   }
+  function isWorkFav(f) { return f.kind === 'work' && norm(f.name) !== 'travail'; }
   function renderPlaces() {
     var box = $('#placesList'); if (!box) return;
     box.innerHTML = '';
@@ -2171,8 +2234,20 @@
       box.appendChild(placeRow(slot.icon, slot.name, f ? f.label : 'Pas encore défini · ' + slot.hint, !!f, slot.key, f ? function () {
         state.favorites = state.favorites.filter(function (x) { return x.id !== f.id; }); save(); renderSettings();
       } : null));
+      if (slot.key === 'Travail') {
+        // Autres lieux de travail : clients, cabinets, agences… (médecins, consultants, ingénieurs, artisans)
+        state.favorites.filter(isWorkFav).forEach(function (w) {
+          box.appendChild(placeRow('work', w.name, w.label, true, w.id, function () {
+            state.favorites = state.favorites.filter(function (x) { return x.id !== w.id; }); save(); renderSettings();
+          }));
+        });
+        if (placeEdit === 'newwork') box.appendChild(el('div', { class: 'place-wrap' }, el('p', { class: 'sectlabel', text: 'Autre lieu de travail' }), placeEditor('newwork', true)));
+        else if (f) box.appendChild(el('button', { type: 'button', class: 'link-btn add-work', onclick: function () {
+          placeEdit = 'newwork'; renderPlaces(); var i = $('#newPlaceName'); if (i) i.focus();
+        } }, '+ Un autre lieu de travail (client, cabinet, agence…)'));
+      }
     });
-    state.favorites.filter(function (f) { return !PLACE_SLOTS.some(function (sl) { return norm(sl.key) === norm(f.name); }); }).forEach(function (f) {
+    state.favorites.filter(function (f) { return !isWorkFav(f) && !PLACE_SLOTS.some(function (sl) { return norm(sl.key) === norm(f.name); }); }).forEach(function (f) {
       box.appendChild(placeRow('pin', f.name, f.label, true, f.id, function () {
         state.favorites = state.favorites.filter(function (x) { return x.id !== f.id; }); save(); renderSettings();
       }));
@@ -3038,6 +3113,22 @@
         s2.addEventListener('change', function () { onb.wEnd = s2.value; });
         body.appendChild(el('label', { class: 'check', for: 'onbHours' }, cb, ' Ajouter mes horaires au planning, du lundi au vendredi'));
         body.appendChild(el('div', { class: 'grid2' }, el('div', null, s1), el('div', null, s2)));
+        // Plusieurs lieux de travail (clients, cabinets, agences…)
+        (onb.extraWorks || []).forEach(function (w, i) {
+          body.appendChild(el('div', { class: 'picked onb-extra' }, el('span', { text: w.name + ' : ' + w.place.label }),
+            el('button', { type: 'button', class: 'icon-btn small', 'aria-label': 'Retirer ' + w.name, onclick: function () { onb.extraWorks.splice(i, 1); renderOnb(); } }, '×')));
+        });
+        if (onb.addingWork) {
+          var wn = el('input', { id: 'onbWorkName', placeholder: 'Nom (ex. Client Dupont, Cabinet 2)', 'aria-label': 'Nom de ce lieu de travail' });
+          body.appendChild(wn);
+          body.appendChild(onbSearch('Entreprise ou adresse', function (p) {
+            onb.extraWorks = onb.extraWorks || [];
+            onb.extraWorks.push({ name: wn.value.trim() || ('Travail ' + (onb.extraWorks.length + 2)), place: p });
+            onb.addingWork = false; renderOnb();
+          }));
+        } else {
+          body.appendChild(el('button', { type: 'button', class: 'link-btn', style: 'align-self:flex-start', onclick: function () { onb.addingWork = true; renderOnb(); var i = $('#onbWorkName'); if (i) i.focus(); } }, '+ J\'ai plusieurs lieux de travail'));
+        }
       }
       body.appendChild(el('p', { class: 'sectlabel', text: 'Et ta salle de sport ? (facultatif)' }));
       if (onb.gym) body.appendChild(el('p', { class: 'picked', text: 'Salle de sport : ' + onb.gym.label }));
@@ -3081,7 +3172,11 @@
       if (onb.work) {
         var name = onb.workKind;
         state.favorites = state.favorites.filter(function (f) { return norm(f.name) !== norm(name); });
-        state.favorites.push({ id: uid(), name: name, label: onb.work.label, lat: onb.work.lat, lon: onb.work.lon });
+        state.favorites.push({ id: uid(), name: name, label: onb.work.label, lat: onb.work.lat, lon: onb.work.lon, kind: name === 'Travail' ? 'work' : undefined });
+        (onb.extraWorks || []).forEach(function (w) {
+          state.favorites = state.favorites.filter(function (f) { return norm(f.name) !== norm(w.name); });
+          state.favorites.push({ id: uid(), name: w.name, label: w.place.label, lat: w.place.lat, lon: w.place.lon, kind: 'work' });
+        });
         var hasRoutine = state.items.some(function (i) { return i.repeat !== 'none' && norm(i.title) === norm(name); });
         if (onb.addHours && onb.wStart && onb.wEnd && toMin(onb.wEnd) > toMin(onb.wStart) && !hasRoutine) {
           state.items.push({ id: uid(), title: name, fixed: true, date: today(), start: onb.wStart, deadline: '', duration: toMin(onb.wEnd) - toMin(onb.wStart),

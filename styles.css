@@ -162,6 +162,7 @@ input[type=radio],input[type=checkbox]{width:20px;min-height:20px;height:20px;ma
 .result:hover{border-color:var(--accent)}
 .result strong{display:block}
 .result small{color:var(--muted)}
+.result .rtag{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--accent-ink);background:var(--accent-soft);border-radius:999px;padding:2px 7px;margin-bottom:3px}
 .picked{background:var(--accent-soft);border:1px solid var(--accent);border-radius:12px;padding:10px 12px;font-size:14px;line-height:1.4;color:var(--accent-ink);display:flex;flex-direction:column;gap:8px}
 .picked p{margin:0}
 .favsave{display:flex;gap:8px}
@@ -337,6 +338,9 @@ summary{cursor:pointer;font-weight:600;min-height:32px}
 .place-act{display:flex;align-items:center;gap:4px;flex-shrink:0}
 .place-act .btn{min-height:40px;padding:0 12px}
 .icon-btn.small{width:36px;height:36px;font-size:18px;border:0;background:none;color:var(--muted)}
+.onb-extra{display:flex;align-items:center;gap:8px}
+.onb-extra span{flex:1;min-width:0}
+.link-btn.add-work{align-self:flex-start;padding:4px 0 4px 50px;font-size:14px;text-align:left}
 .place-edit{display:flex;flex-direction:column;gap:8px;padding:10px;background:var(--sunk);border-radius:12px}
 .hours{margin:0;font-size:12px;font-weight:600;color:var(--muted)}
 .hours.closed{color:var(--hot-ink)}
