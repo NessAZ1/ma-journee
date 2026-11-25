@@ -426,6 +426,9 @@ summary{cursor:pointer;font-weight:600;min-height:32px}
 .ai-msg{max-width:88%;border-radius:16px;padding:10px 12px;font-size:15px;line-height:1.45;white-space:pre-line;overflow-wrap:anywhere}
 .ai-msg.user{align-self:flex-end;background:var(--accent);color:var(--on-accent);border-bottom-right-radius:4px}
 .ai-msg.ai{align-self:flex-start;background:var(--sunk);border-bottom-left-radius:4px}
+.ai-msg.typing{color:var(--muted);font-style:italic;animation:mjPulse 1.4s ease-in-out infinite}
+@keyframes mjPulse{50%{opacity:.55}}
+@media (prefers-reduced-motion:reduce){.ai-msg.typing{animation:none}}
 .ai-card{align-self:stretch;background:var(--card);border:1px solid var(--line2);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:10px}
 .ai-card .btns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .ai-card .btns.one{grid-template-columns:1fr}

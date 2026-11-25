@@ -263,6 +263,28 @@
       <button type="button" class="btn primary block" id="icsWeekBtn">Ajouter ma semaine à l'agenda du téléphone</button>
     </div>
 
+    <div class="box pro" id="proBox" hidden>
+      <h2>Ma Journée Pro</h2>
+      <p class="hint" id="proStatus">Le serveur Pro n'est pas encore installé.</p>
+      <label for="proCode">Code Pro</label>
+      <div class="searchrow">
+        <input id="proCode" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Ton code d'accès">
+        <button type="button" class="btn" id="proCodeBtn">Valider</button>
+      </div>
+      <label class="check"><input type="checkbox" id="proAI"> Assistant IA (Claude) : il comprend n'importe quelle phrase</label>
+      <label class="check"><input type="checkbox" id="proMask" checked> Masquer mes rendez-vous médicaux à l'IA</label>
+      <label class="check"><input type="checkbox" id="proPush"> Rappels de départ même app fermée</label>
+      <button type="button" class="btn block" id="proPushTest" hidden>Envoyer une notification d'essai</button>
+      <details>
+        <summary>Ce qui passe par le serveur</summary>
+        <ul class="howto">
+          <li><strong>Assistant IA :</strong> ta demande et ton planning des 7 prochains jours (titres, heures, noms des lieux, prénoms de tes proches) sont envoyés à Claude (Anthropic) pour te répondre. Les rendez-vous médicaux peuvent être masqués. Les numéros de téléphone ne sont jamais envoyés.</li>
+          <li><strong>Rappels :</strong> le serveur ne reçoit que des horaires. Le texte des rappels reste sur ton téléphone.</li>
+          <li>Rien n'est fait sans ta validation, et ton planning reste enregistré sur ton téléphone.</li>
+        </ul>
+      </details>
+    </div>
+
     <div class="box">
       <h2>Importer mes agendas</h2>
       <p class="hint">Teams / Outlook, Google Agenda, Doctolib : importez un fichier .ics. L'app cherche les adresses et place tout dans votre journée.</p>
@@ -412,7 +434,7 @@
       <button type="submit" class="btn primary" id="aiSend">Envoyer</button>
     </form>
     <div class="ai-foot">
-      <p class="hint">Compris directement sur ton téléphone. Rien n'est fait sans ta validation.</p>
+      <p class="hint" id="aiFootHint">Compris directement sur ton téléphone. Rien n'est fait sans ta validation.</p>
       <button type="button" class="link-btn" id="aiClear">Effacer l'historique</button>
     </div>
   </div>
@@ -448,6 +470,7 @@
 </dialog>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
