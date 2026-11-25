@@ -37,6 +37,25 @@
   color-scheme:dark;
 }
 
+/* Couleurs de l'app (clair, puis sombre) */
+:root[data-accent="violet"]{--accent:#6D3FD1;--accent-hover:#552FB0;--accent-soft:#F2EDFD;--accent-ink:#5328B5}
+:root[data-accent="vert"]{--accent:#0F7A55;--accent-hover:#0B5E41;--accent-soft:#E6F4EE;--accent-ink:#0B6346}
+:root[data-accent="orange"]{--accent:#B84D0E;--accent-hover:#9E410B;--accent-soft:#FDF0E7;--accent-ink:#9A3F0A}
+:root[data-accent="rose"]{--accent:#C2296B;--accent-hover:#9E1F56;--accent-soft:#FCEBF2;--accent-ink:#A61F5A}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"])[data-accent="violet"]{--accent:#B49BFF;--accent-hover:#CDBBFF;--accent-soft:#261B45;--accent-ink:#D3C4FF}
+  :root:not([data-theme="light"])[data-accent="vert"]{--accent:#5ED3A3;--accent-hover:#8BE2BD;--accent-soft:#10291F;--accent-ink:#9BE8C6}
+  :root:not([data-theme="light"])[data-accent="orange"]{--accent:#FF9A5C;--accent-hover:#FFB687;--accent-soft:#33200F;--accent-ink:#FFC29C}
+  :root:not([data-theme="light"])[data-accent="rose"]{--accent:#FF86B8;--accent-hover:#FFA8CC;--accent-soft:#3A1527;--accent-ink:#FFB3D2}
+}
+:root[data-theme="dark"][data-accent="violet"]{--accent:#B49BFF;--accent-hover:#CDBBFF;--accent-soft:#261B45;--accent-ink:#D3C4FF}
+:root[data-theme="dark"][data-accent="vert"]{--accent:#5ED3A3;--accent-hover:#8BE2BD;--accent-soft:#10291F;--accent-ink:#9BE8C6}
+:root[data-theme="dark"][data-accent="orange"]{--accent:#FF9A5C;--accent-hover:#FFB687;--accent-soft:#33200F;--accent-ink:#FFC29C}
+:root[data-theme="dark"][data-accent="rose"]{--accent:#FF86B8;--accent-hover:#FFA8CC;--accent-soft:#3A1527;--accent-ink:#FFB3D2}
+.swatches{display:flex;gap:10px;flex-wrap:wrap}
+.swatch{width:44px;height:44px;border-radius:50%;border:3px solid var(--card);box-shadow:0 0 0 1px var(--line2);cursor:pointer}
+.swatch[aria-checked="true"]{box-shadow:0 0 0 3px var(--ink)}
+
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-body);font-size:16px}
@@ -325,6 +344,23 @@ summary{cursor:pointer;font-weight:600;min-height:32px}
 .wg-now{position:absolute;left:0;right:0;height:2px;background:var(--hot-ink);z-index:2}
 .wg-now::before{content:"";position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--hot-ink)}
 .chip.ghost{border-style:dashed;color:var(--muted);font-weight:500}
+.item-notes{margin:0;font-size:13px;line-height:1.4;background:var(--sunk);border-left:3px solid var(--line2);border-radius:6px;padding:6px 10px;white-space:pre-line;overflow-wrap:anywhere}
+.notes-input{width:100%;min-height:60px;border:1px solid var(--line2);border-radius:12px;padding:10px 12px;line-height:1.4;background:var(--card);resize:vertical}
+.nextup.soon{background:var(--warn-ink);color:var(--warn-bg)}
+.nextup.soon a{color:var(--warn-ink);background:var(--warn-bg)}
+.nextup.lateb{background:var(--hot-ink);color:var(--hot-bg)}
+.nextup.lateb a{color:var(--hot-ink);background:var(--hot-bg)}
+.nextup .countdown{font-weight:700;font-size:14px;opacity:1}
+.wstats{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.wstats-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.wstat{background:var(--sunk);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.wstat strong{font-family:var(--font-display);font-size:19px;font-variant-numeric:tabular-nums}
+.wstat span{font-size:12px;color:var(--muted);line-height:1.3}
+.streak{margin:0;font-size:14px;font-weight:700;color:var(--ok-ink);background:var(--ok-bg);border-radius:10px;padding:8px 12px}
+.shotbtn{display:flex;align-items:center;gap:10px;justify-content:center;border-style:dashed;color:var(--accent-ink);border-color:var(--accent);background:var(--accent-soft)}
+.shot-form label{font-size:13px;font-weight:600;color:var(--label)}
+.shot-form input{min-height:44px}
+.ocr-raw{white-space:pre-wrap;font-size:12px;max-height:160px;overflow:auto;background:var(--sunk);padding:8px;border-radius:8px;margin:8px 0 0}
 /* Briefing / bilan / météo */
 .brief{background:var(--card);border:1px solid var(--accent);border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:8px}
 .brief.warnb{border-color:var(--warn-line);background:var(--warn-bg)}

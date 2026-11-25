@@ -237,7 +237,9 @@
     return -1;
   }
 
-  function planDay(date) {
+  // opts.naive : sans optimisation (dans l'ordre où les tâches ont été notées), pour mesurer le temps gagné
+  function planDay(date, opts) {
+    var naive = !!(opts && opts.naive);
     var s = state.settings;
     var items = occurrences(date);
     var fixed = items.filter(isFixed).sort(function (a, b) { return toMin(a.start) - toMin(b.start); });
@@ -272,10 +274,12 @@
           var wait = 0;
           // Une course dont on ne connaît pas encore le lieu : pas avant 9 h (les commerces ouvrent rarement plus tôt)
           if ((!tp || (t.query && !tp.hours)) && !t.online && arrive < 9 * 60) { wait = 9 * 60 - arrive; arrive = 9 * 60; }
+          // « pas avant » : après le travail, l'après-midi, le soir, à partir de 14h…
+          if (t.after && arrive < toMin(t.after)) { wait += toMin(t.after) - arrive; arrive = toMin(t.after); }
           if (tp && tp.hours) { // attendre l'ouverture si besoin, ou passer si c'est fermé
             var op = openFrom(tp, date, arrive, +t.duration || 15);
             if (op === -1) return;
-            if (op !== null && op > arrive) { wait = op - arrive; arrive = op; }
+            if (op !== null && op > arrive) { wait += op - arrive; arrive = op; }
           }
           var finish = arrive + (+t.duration || 15);
           var next = f ? travel(tp || pos, fPlace) : 0;
@@ -284,7 +288,7 @@
           var score = tt + wait;
           if (t.priority === 'haute') score -= 60;
           if (t.deadline) score -= Math.max(0, 180 - (toMin(t.deadline) - cur)) / 2;
-          if (!best || score < best.score) best = { t: t, tt: tt, arrive: arrive, finish: finish, score: score };
+          if (!best || (!naive && score < best.score)) best = { t: t, tt: tt, arrive: arrive, finish: finish, score: score };
         });
         if (!best) break;
         out.push({ item: best.t, start: best.arrive, end: best.finish, travel: best.tt });
@@ -299,7 +303,8 @@
           if (fPlace) pos = fPlace;
           return;
         }
-        if (isToday && !f.done && st < nowMin() - 30) { // commencé depuis plus de 30 min : tu y es déjà, pas de retard
+        // Déjà commencé : tu y es (dès le début pour une longue étape comme le travail, après 30 min sinon)
+        if (isToday && !f.done && st < nowMin() - (fd >= 120 ? 0 : 30)) {
           out.push({ item: f, start: st, end: st + fd, travel: 0, ongoing: true });
           ongEnd = Math.max(ongEnd, st + fd); ongPlace = fPlace || ongPlace;
           if (fPlace) pos = fPlace;
@@ -343,7 +348,7 @@
     { re: /\b(sport|gym|piscine|muscu|foot|yoga|tennis|course a pied)\b/, list: ['Tenue de sport', 'Gourde', 'Serviette', 'Cadenas'] },
     { re: /\b(travail|boulot|bureau)\b/, list: ['Badge', 'Ordinateur', 'Chargeur'] },
     { re: /\b(ecole|creche|enfants|nounou)\b/, list: ['Cartable', 'Goûter', 'Doudou'] },
-    { re: /\b(courses|supermarche|epicerie|marche)\b/, list: ['Sacs', 'Liste de courses'] },
+    { re: /\b(courses|supermarche|epicerie|marche)\b/, list: ['Sacs'] },
     { re: /\b(train|tgv|gare|avion|aeroport|vol)\b/, list: ['Billet', 'Pièce d\'identité', 'Chargeur'] },
     { re: /\b(entretien|examen|concours|partiel)\b/, list: ['Convocation', 'Pièce d\'identité', 'CV ou dossier', 'Stylo'] },
     { re: /\b(veterinaire)\b/, list: ['Carnet de santé de l\'animal', 'Laisse ou caisse'] },
@@ -580,15 +585,28 @@
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); suggest(true); } });
   }
 
+  // Une adresse trouvée doit vraiment correspondre : même rue, même code postal (sinon on ne devine pas)
+  var ADDR_STOP = ['rue', 'avenue', 'boulevard', 'place', 'chemin', 'allee', 'impasse', 'route', 'quai', 'cours', 'square', 'passage', 'paris', 'france', 'cedex', 'bis', 'ter', 'des', 'les', 'aux', 'sur', 'sous'];
+  function addressMatches(q, p) {
+    var nq = norm(q), nl = norm((p.label || '') + ' ' + (p.name || ''));
+    var cq = (nq.match(/\b\d{5}\b/) || [])[0], cl = (nl.match(/\b\d{5}\b/) || [])[0];
+    if (cq && cl && cq !== cl) return false;
+    var words = nq.split(/[^a-z0-9]+/).filter(function (w) { return w.length >= 4 && !/^\d+$/.test(w) && ADDR_STOP.indexOf(w) < 0; });
+    if (!words.length) return true;
+    var hits = words.filter(function (w) { return nl.indexOf(w) >= 0; }).length;
+    return hits >= Math.ceil(words.length / 2);
+  }
   function findAddress(id, btn) {
     var it = byId(id); if (!it) return Promise.resolve(false);
     if (btn) { btn.disabled = true; btn.textContent = 'Recherche…'; }
     var q = it.locationText;
+    var isAddress = /\d/.test(q);
+    var keep = function (l) { return isAddress ? l.filter(function (p) { return addressMatches(q, p); }) : l; };
     // une vraie adresse (avec un numéro) → Base Adresse Nationale d'abord ; sinon OpenStreetMap
-    var first = /\d/.test(q) ? addressSearch(q).then(function (l) { return l.length ? l : geocode(q); }) : geocode(q).then(function (l) { return l.length ? l : addressSearch(q); });
+    var first = isAddress ? addressSearch(q).then(function (l) { l = keep(l); return l.length ? l : geocode(q).then(keep); }) : geocode(q).then(function (l) { return l.length ? l : addressSearch(q); });
     return first.then(function (list) {
       if (list.length) { var p = Object.assign({}, list[0]); delete p.kind; it.place = p; save(); render(); toast('Adresse trouvée : ' + p.name); return true; }
-      toast('Adresse introuvable. Modifiez le lieu à la main.');
+      toast(isAddress ? 'Adresse à vérifier : « ' + q + ' » n\'existe pas telle quelle. Touche « Trouver l\'adresse » ou modifie le lieu.' : 'Adresse introuvable. Modifie le lieu à la main.');
       if (btn) { btn.disabled = false; btn.textContent = "Trouver l'adresse"; }
       return false;
     }).catch(function () {
@@ -663,9 +681,25 @@
   }
 
   function parseQuick(text) {
-    return text.split(/[,;\n]+|\s+(?:et|puis)\s+/i).map(function (s) { return s.trim(); }).filter(Boolean).map(function (chunk) {
-      var it = { fixed: false, start: '', deadline: '', duration: 0, priority: 'normale', repeat: 'none', date: currentDate, online: false, place: null, locationText: '', query: '' };
+    // « entre 12h et 14h » ne doit pas être coupé en deux au « et »
+    text = text.replace(/(entre\s+\d{1,2}\s*h\s*\d{0,2})\s+et\s+(\d{1,2}\s*h)/gi, '$1 à $2');
+    var all = text.split(/[,;\n]+|\s+(?:et|puis)\s+/i).map(function (s) { return s.trim(); }).filter(Boolean).map(function (chunk) {
+      var it = { fixed: false, start: '', deadline: '', after: '', duration: 0, priority: 'normale', repeat: 'none', date: currentDate, online: false, place: null, locationText: '', query: '' };
       var t = ' ' + chunk + ' ';
+      // Créneaux en langage courant : « entre 14h et 16h », « après 18h », « après le travail », « avant le dentiste »
+      var hm2 = function (h, mi) { return pad(+h) + ':' + (mi || '00'); };
+      t = t.replace(/\s(?:entre|de)\s+(\d{1,2})\s*h\s*(\d{2})?\s+(?:et|à|a)\s+(\d{1,2})\s*h\s*(\d{2})?(?=\s)/i, function (m, h1, m1, h2, m2) { it.after = hm2(h1, m1); it.deadline = hm2(h2, m2); return ' '; });
+      t = t.replace(/\s(?:après|apres|à partir de|a partir de|pas avant)\s+(\d{1,2})\s*h\s*(\d{2})?(?=\s)/i, function (m, h, mi) { it.after = hm2(h, mi); return ' '; });
+      t = t.replace(/\s(?:après|apres)\s+(?:le |la |l'|mon |ma |les )?(travail|boulot|taf|bureau|cours|école|ecole|sport|salle|réunion|reunion|rdv|rendez-vous|dentiste|médecin|medecin|déjeuner|dejeuner|[A-ZÉÈ][\wéèêàç-]+)(?=\s)/, function (m, w) { it.afterRef = w; return ' '; });
+      t = t.replace(/\s(?:avant)\s+(?:le |la |l'|mon |ma |d'aller (?:au |à la |chez )?)([a-zA-Zéèêàç-]{3,})(?=\s)/i, function (m, w) {
+        if (/^(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)$/i.test(w)) return m;
+        it.beforeRef = w; return ' ';
+      });
+      // Moments de la journée
+      t = t.replace(/\bcet\s+apr[èe]s-?midi\b|\bcet\s+aprem\b/i, function () { it.after = it.after || '13:30'; it.deadline = it.deadline || '18:30'; return " aujourd'hui "; });
+      t = t.replace(/\b(?:l'|dans l'|en début d'|en debut d')apr[èe]s-?midi\b|\bl'aprem\b/i, function () { it.after = it.after || '13:30'; it.deadline = it.deadline || '18:30'; return ' '; });
+      if (/\b(?:le matin|dans la matin[ée]e|en matin[ée]e|ce matin)\b/i.test(t)) { it.deadline = it.deadline || '12:00'; t = t.replace(/\b(?:le matin|dans la matin[ée]e|en matin[ée]e)\b/i, ' '); }
+      if (/\b(?:le soir|ce soir|en soir[ée]e|dans la soir[ée]e)\b/i.test(t)) { it.after = it.after || '18:00'; t = t.replace(/\b(?:le soir|en soir[ée]e|dans la soir[ée]e)\b/i, ' '); }
       t = t.replace(/\bavant\s+(\d{1,2})\s*h\s*(\d{2})?/i, function (m, h, mi) { if (+h < 24) { it.deadline = pad(+h) + ':' + (mi || '00'); return ' '; } return m; });
       t = t.replace(/\s(?:à\s*|a\s+|vers\s+)?(\d{1,2})\s*h\s*(\d{2})?(?=\s)/i, function (m, h, mi) { if (+h < 24) { it.start = pad(+h) + ':' + (mi || '00'); it.fixed = true; return ' '; } return m; });
       // « à midi », « midi et demi », « vers minuit »
@@ -749,6 +783,23 @@
       if (!it.duration) it.duration = 30;
       return it;
     });
+    // « après le travail », « avant le dentiste » : on cherche ce rendez-vous le même jour (déjà prévu ou dans la même phrase)
+    all.forEach(function (it) {
+      if (!it.afterRef && !it.beforeRef) return;
+      var fixedThatDay = occurrences(it.date).filter(isFixed).concat(all.filter(function (x) { return x !== it && x.fixed && x.start && x.date === it.date; }));
+      var match = function (ref) {
+        var r = norm(ref), isWork = /^(travail|boulot|taf|bureau)$/.test(r);
+        return fixedThatDay.filter(function (x) { var nt = norm(x.title); return nt.indexOf(r) >= 0 || (isWork && /travail|boulot|bureau/.test(nt)) || (x.person && norm(x.person) === r); })[0];
+      };
+      if (it.afterRef) {
+        var a = match(it.afterRef);
+        if (a) it.after = fmt(toMin(a.start) + (+a.duration || 30));
+        else if (/^(travail|boulot|taf|bureau)$/i.test(it.afterRef)) it.after = '18:00';
+      }
+      if (it.beforeRef) { var b = match(it.beforeRef); if (b) it.deadline = b.start; }
+      delete it.afterRef; delete it.beforeRef;
+    });
+    return all;
   }
 
   // Prépare les éléments à ajouter à partir d'une phrase, sans rien enregistrer (pour l'aperçu)
@@ -759,7 +810,7 @@
       var copies = p.times || 1, used = [];
       for (var k = 0; k < copies; k++) {
         var item = {
-          id: uid(), title: p.title, fixed: p.fixed, date: p.date, start: p.start, deadline: p.deadline,
+          id: uid(), title: p.title, fixed: p.fixed, date: p.date, start: p.start, deadline: p.fixed ? '' : p.deadline, after: p.fixed ? '' : (p.after || ''),
           duration: p.duration, priority: p.priority, repeat: p.repeat, skip: [], doneDates: {},
           locationText: p.locationText || '', place: p.place, online: p.online, source: 'manuel', query: p.query || '', person: p.person || ''
         };
@@ -899,7 +950,7 @@
     var it = o.item, d = it.occ;
     var fixed = isFixed(it);
     var where = it.online ? 'Sans déplacement' : (it.place ? (norm(it.place.name) === 'sport' ? 'Salle de sport' : it.place.name) : (it.locationText || 'Lieu à préciser'));
-    var meta = where + ' · ' + dur(+it.duration || 30) + (it.deadline && !fixed ? ' · avant ' + it.deadline : '') +
+    var meta = where + ' · ' + dur(+it.duration || 30) + (it.after && !fixed ? ' · pas avant ' + it.after : '') + (it.deadline && !fixed ? ' · avant ' + it.deadline : '') +
       (it.source && it.source !== 'manuel' && it.source !== 'exemple' ? ' · via ' + it.source : '');
     var detourNote = it.place && it.place.detour != null && !it.done
       ? el('p', { class: 'onroute', text: it.place.detour <= 2 ? 'Pile sur votre trajet' : 'Sur votre trajet · +' + it.place.detour + ' min de détour' }) : null;
@@ -941,6 +992,7 @@
       detourNote,
       hoursNote,
       wxNote,
+      it.notes ? el('p', { class: 'item-notes', text: it.notes }) : null,
       it.done ? null : packBox(it, d),
       btns);
     var swipe = el('div', { class: 'swipe' },
@@ -970,8 +1022,9 @@
     if (!src) return null;
     var checked = packChecked(src, d);
     var nOk = list.filter(function (x) { return checked[x]; }).length;
+    var isShop = /\b(courses|supermarche|epicerie|marche|drive)\b/.test(norm(it.title));
     var box = el('details', { class: 'pack' + (list.length && nOk === list.length ? ' ok' : '') },
-      el('summary', null, list.length ? 'À prendre · ' + nOk + '/' + list.length : '+ Liste « à prendre »'));
+      el('summary', null, isShop ? (list.length ? 'Liste de courses · ' + nOk + '/' + list.length : '+ Liste de courses') : (list.length ? 'À prendre · ' + nOk + '/' + list.length : '+ Liste « à prendre »')));
     if (packOpen[it.id + d]) box.open = true;
     box.addEventListener('toggle', function () { packOpen[it.id + d] = box.open; });
     var ul = el('ul', null);
@@ -991,7 +1044,7 @@
         } }, '×')));
     });
     box.appendChild(ul);
-    var add = el('input', { type: 'text', placeholder: 'Ajouter (ex. clés, parapluie)', 'aria-label': 'Ajouter un objet à prendre' });
+    var add = el('input', { type: 'text', placeholder: isShop ? 'Ajouter (ex. lait, pain, œufs)' : 'Ajouter (ex. clés, parapluie)', 'aria-label': isShop ? 'Ajouter à la liste de courses' : 'Ajouter un objet à prendre' });
     var form = el('form', { class: 'packadd', onsubmit: function (e) {
       e.preventDefault();
       var v = add.value.trim(); if (!v) return;
@@ -1123,18 +1176,26 @@
     }
     if (!next) return;
     var leave = next.travel ? (next.leaveAt || next.start - next.travel) : next.start;
-    var when = leave <= n ? (next.travel ? 'Partez maintenant' : 'Maintenant') : (next.travel ? 'Partir à ' + fmt(leave) : 'À ' + fmt(next.start));
+    // Compte à rebours : « Pars dans 12 min »
+    var left = leave - n;
+    var when;
+    if (left <= 0) when = next.travel ? 'Pars maintenant !' : 'C\'est maintenant';
+    else if (left <= 180) when = (next.travel ? 'Pars dans ' : 'Dans ') + dur(left) + (next.travel ? ' (à ' + fmt(leave) + ')' : '');
+    else when = next.travel ? 'Départ à ' + fmt(leave) : 'À ' + fmt(next.start);
     var late = lateMinutes(next.item, currentDate);
     if (late) when = 'Retard estimé : ' + late + ' min';
+    box.classList.toggle('soon', !late && left <= 10);
+    box.classList.toggle('lateb', !!late);
     box.hidden = false;
     box.appendChild(el('div', null,
       el('small', { text: 'Prochaine étape' }),
       el('strong', { text: fmt(next.start) + ' · ' + next.item.title }),
-      el('span', { text: when + (next.travel ? ' · ≈ ' + dur(next.travel) + ' de trajet' : '') })));
+      el('span', { class: 'countdown', text: when + (next.travel ? ' · ≈ ' + dur(next.travel) + ' de trajet' : '') })));
     var src = byId(next.item.id);
     var toTake = src ? packList(src).filter(function (x) { return !packChecked(src, currentDate)[x]; }) : [];
     if (next.travel && isWet(wxAt(currentDate, leave))) toTake.push('Parapluie');
     if (toTake.length) box.firstChild.appendChild(el('span', { class: 'take', text: 'À prendre : ' + toTake.join(', ') }));
+    if (next.item.notes) box.firstChild.appendChild(el('span', { class: 'take', text: 'Note : ' + next.item.notes }));
     var acts = el('div', { class: 'acts' });
     if (placeOf(next.item) || (next.item.locationText && !next.item.online)) acts.appendChild(el('a', { href: mapsLink(next.item), target: '_blank', rel: 'noopener' }, 'Y aller'));
     if (late && isFixed(next.item)) acts.appendChild(el('button', { type: 'button', class: 'late-btn', onclick: function () { openSheet(next.item.id, currentDate, 'notify', 'late'); } }, 'Je suis en retard'));
@@ -1439,6 +1500,9 @@
     var o = planDay(d).out.filter(function (x) { return x.item.id === it.id; })[0];
     var st = o ? o.start : toMin(it.start || state.settings.dayStart), en = o ? o.end : st + (+it.duration || 30);
     var exists = !!byId(sheet.id);
+    // Envoyer ce rendez-vous à quelqu'un : il l'ajoute à sa propre app en un tap
+    body.appendChild(el('p', { class: 'sectlabel', text: 'Partager ce rendez-vous' }));
+    body.appendChild(inviteBox(it, d, fmt(st)));
     var grid = el('div', { class: 'channels' });
     if (exists) {
       grid.appendChild(el('button', { type: 'button', class: 'btn', onclick: function () { closeSheet(); startEdit(it.id); } }, it.repeat !== 'none' ? 'Modifier la série' : 'Modifier'));
@@ -1884,8 +1948,58 @@
     renderDayMenu();
   }
 
+  // ================= Mes stats : temps gagné, étapes faites, série =================
+  function dayGain(d) {
+    var occ = occurrences(d);
+    if (occ.filter(function (o) { return !isFixed(o); }).length < 1) return 0;
+    var p = planDay(d), nv = planDay(d, { naive: true });
+    return Math.max(0, nv.totalTravel - p.totalTravel);
+  }
+  function weekStats(ws) {
+    var r = { done: 0, total: 0, travel: 0, gained: 0 };
+    daysBetween(ws, addDays(ws, 6)).forEach(function (d) {
+      var occ = occurrences(d);
+      if (!occ.length) return;
+      r.total += occ.length;
+      r.done += occ.filter(function (o) { return o.done; }).length;
+      r.travel += planDay(d).totalTravel;
+      r.gained += dayGain(d);
+    });
+    return r;
+  }
+  // Jours d'affilée où tout a été fait (les jours vides ne cassent pas la série)
+  function streakDays() {
+    var d = today(), n = 0;
+    var occT = occurrences(d);
+    if (!(occT.length && occT.every(function (o) { return o.done; }))) d = addDays(d, -1);
+    for (var i = 0; i < 90; i++, d = addDays(d, -1)) {
+      var occ = occurrences(d);
+      if (!occ.length) continue;
+      if (occ.every(function (o) { return o.done; })) n++; else break;
+    }
+    return n;
+  }
+  function renderWeekStats(ws) {
+    var box = $('#weekStats'); box.innerHTML = '';
+    var st = weekStats(ws);
+    box.hidden = !st.total;
+    if (!st.total) return;
+    var sk = streakDays();
+    var tiles = [
+      [st.done + '/' + st.total, 'étapes faites'],
+      [st.travel ? dur(st.travel) : '0', 'de trajets'],
+      [st.gained ? dur(Math.round(st.gained / 5) * 5 || st.gained) : '0 min', 'gagnées grâce à l\'ordre optimisé']
+    ];
+    var grid = el('div', { class: 'wstats-grid' });
+    tiles.forEach(function (t) { grid.appendChild(el('div', { class: 'wstat' }, el('strong', { text: t[0] }), el('span', { text: t[1] }))); });
+    box.appendChild(el('p', { class: 'brief-k', text: 'Ta semaine en chiffres' }));
+    box.appendChild(grid);
+    if (sk >= 2) box.appendChild(el('p', { class: 'streak', text: 'Série : ' + sk + ' jours bouclés d\'affilée. Continue !' }));
+  }
+
   function renderWeek(ws) {
     renderWeekAlert(ws);
+    renderWeekStats(ws);
     $('#organizeWeek').hidden = addDays(ws, 6) < today();
     var grid = weekDisplay() === 'grid';
     $('#wGridBtn').setAttribute('aria-selected', grid); $('#wListBtn').setAttribute('aria-selected', !grid);
@@ -1938,24 +2052,52 @@
     if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () { toast('Programme copié, collez-le où vous voulez.'); }, function () { toast('Copie impossible sur cet appareil.'); });
   });
   function icsEscape(s) { return (s || '').replace(/\\/g, '\\\\').replace(/([,;])/g, '\\$1').replace(/\n/g, '\\n'); }
-  $('#exportBtn').addEventListener('click', function () {
-    var plan = planDay(currentDate);
+  // Fichier agenda (.ics) avec une alerte « Il est temps de partir » : le téléphone la déclenche même app fermée
+  function exportICS(days, filename) {
     var lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Ma Journee//FR', 'CALSCALE:GREGORIAN'];
-    plan.out.forEach(function (o) {
-      lines.push('BEGIN:VEVENT', 'UID:' + o.item.id + '-' + currentDate + '@ma-journee',
-        'DTSTAMP:' + new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z',
-        'DTSTART:' + stamp(currentDate, o.start), 'DTEND:' + stamp(currentDate, o.end),
-        'SUMMARY:' + icsEscape(o.item.title));
-      if (placeText(o.item)) lines.push('LOCATION:' + icsEscape(placeText(o.item)));
-      if (o.travel && !o.past) lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Il est temps de partir', 'TRIGGER:-PT' + (o.travel + 5) + 'M', 'END:VALARM');
-      lines.push('END:VEVENT');
+    var count = 0;
+    days.forEach(function (d) {
+      planDay(d).out.forEach(function (o) {
+        if (o.past || o.item.done) return;
+        count++;
+        lines.push('BEGIN:VEVENT', 'UID:' + o.item.id + '-' + d + '@ma-journee',
+          'DTSTAMP:' + new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z',
+          'DTSTART:' + stamp(d, o.start), 'DTEND:' + stamp(d, o.end),
+          'SUMMARY:' + icsEscape(o.item.title));
+        if (placeText(o.item)) lines.push('LOCATION:' + icsEscape(placeText(o.item)));
+        if (o.item.notes) lines.push('DESCRIPTION:' + icsEscape(o.item.notes));
+        var before = o.travel ? o.travel + (+state.settings.buffer || 0) + (o.margin || 0) : 10;
+        lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEscape(o.travel ? 'Il est temps de partir : ' + o.item.title : 'Bientôt : ' + o.item.title), 'TRIGGER:-PT' + before + 'M', 'END:VALARM');
+        lines.push('END:VEVENT');
+      });
     });
     lines.push('END:VCALENDAR');
+    if (!count) { toast('Rien à venir à ajouter à l\'agenda.'); return; }
     var blob = new Blob([lines.join('\r\n')], { type: 'text/calendar' });
-    var a = el('a', { href: URL.createObjectURL(blob), download: 'ma-journee-' + currentDate + '.ics' });
+    var a = el('a', { href: URL.createObjectURL(blob), download: filename });
     document.body.appendChild(a); a.click(); a.remove();
-    toast('Fichier agenda créé : ouvrez-le pour l\'ajouter à votre agenda.');
-  });
+    toast(count + ' étape(s) prêtes : ouvre le fichier pour les ajouter à l\'agenda de ton téléphone, avec les alertes de départ.');
+  }
+  $('#exportBtn').addEventListener('click', function () { exportICS([currentDate], 'ma-journee-' + currentDate + '.ics'); });
+  $('#icsWeekBtn').addEventListener('click', function () { exportICS(daysBetween(today(), addDays(today(), 6)), 'ma-journee-semaine-' + today() + '.ics'); });
+
+  // ================= Couleur de l'app =================
+  var ACCENTS = [['bleu', 'Bleu', '#2347C6'], ['violet', 'Violet', '#6D3FD1'], ['vert', 'Vert', '#0F7A55'], ['orange', 'Orange', '#C2510F'], ['rose', 'Rose', '#C2296B']];
+  function applyAccent() {
+    var a = state.settings.accent || 'bleu';
+    if (a === 'bleu') delete document.documentElement.dataset.accent; else document.documentElement.dataset.accent = a;
+    var hex = (ACCENTS.filter(function (x) { return x[0] === a; })[0] || ACCENTS[0])[2];
+    var meta = document.querySelector('meta[name=theme-color]'); if (meta) meta.setAttribute('content', hex);
+  }
+  function renderAccentPicker() {
+    var box = $('#accentPicker'); if (!box) return;
+    box.innerHTML = '';
+    ACCENTS.forEach(function (x) {
+      var on = (state.settings.accent || 'bleu') === x[0];
+      box.appendChild(el('button', { type: 'button', class: 'swatch', role: 'radio', 'aria-checked': on ? 'true' : 'false', 'aria-label': x[1], style: 'background:' + x[2],
+        onclick: function () { state.settings.accent = x[0]; save(); applyAccent(); renderAccentPicker(); } }));
+    });
+  }
 
   // ================= Modèles prêts à choisir =================
   var ICONS = {
@@ -2083,7 +2225,7 @@
   function kind() { return form.querySelector('input[name=fKind]:checked').value; }
   function syncKind() {
     var fixed = kind() === 'fixed';
-    $('#startWrap').hidden = !fixed; $('#deadlineWrap').hidden = fixed;
+    $('#startWrap').hidden = !fixed; $('#deadlineWrap').hidden = fixed; $('#afterWrap').hidden = fixed;
     $('#fStart').required = fixed;
   }
   form.querySelectorAll('input[name=fKind]').forEach(function (r) { r.addEventListener('change', syncKind); });
@@ -2158,13 +2300,14 @@
     go('add');
     $('#fTitle').value = it.title;
     form.querySelector('input[value=' + (isFixed(it) ? 'fixed' : 'flex') + ']').checked = true;
-    $('#fDate').value = it.date; $('#fStart').value = it.start || ''; $('#fDeadline').value = it.deadline || '';
+    $('#fDate').value = it.date; $('#fStart').value = it.start || ''; $('#fDeadline').value = it.deadline || ''; $('#fAfter').value = it.after || '';
     $('#fDuration').value = it.duration || 30;
     $('#fPriority').value = it.priority || 'normale';
     $('#fRepeat').value = it.repeat || 'none';
     $('#fPlace').value = it.place ? it.place.name : (it.locationText || '');
     $('#fOnline').checked = !!it.online;
     $('#fPhone').value = it.phone || ''; $('#fEmail').value = it.email || '';
+    $('#fNotes').value = it.notes || '';
     $('#formEyebrow').textContent = it.repeat !== 'none' ? 'Modifier la série' : 'Modifier';
     $('#formTitle').textContent = it.title;
     $('#submitBtn').textContent = 'Enregistrer'; $('#cancelEdit').hidden = false; $('#deleteBtn').hidden = false;
@@ -2199,6 +2342,7 @@
       date: $('#fDate').value,
       start: fixed ? $('#fStart').value : '',
       deadline: fixed ? '' : $('#fDeadline').value,
+      after: fixed ? '' : $('#fAfter').value,
       duration: +$('#fDuration').value || 30,
       priority: $('#fPriority').value,
       repeat: $('#fRepeat').value,
@@ -2206,7 +2350,8 @@
       place: pickedPlace,
       online: $('#fOnline').checked,
       phone: $('#fPhone').value.trim(),
-      email: $('#fEmail').value.trim()
+      email: $('#fEmail').value.trim(),
+      notes: $('#fNotes').value.trim()
     };
     if (!data.title || !data.date) return;
     var nearestQuery = !data.place && !data.locationText && !data.online ? presetQuery : '';
@@ -2281,6 +2426,7 @@
     var s = state.settings;
     renderPlaces();
     renderPeople();
+    renderAccentPicker();
     $('#sMode').value = s.mode; $('#sStart').value = s.dayStart; $('#sEnd').value = s.dayEnd; $('#sBuffer').value = s.buffer;
     $('#sName').value = s.name || '';
     $('#sMargins').checked = s.smartMargins !== false;
@@ -2586,9 +2732,10 @@
   // ================= Assistant « Demande à Ma Journée » =================
   // Compréhension locale des demandes (aucune donnée envoyée à une IA externe).
   // Chaque action passe par une carte « Confirmer / Annuler » ; rien n'est annoncé comme fait avant d'être fait.
-  var AI_SUGGEST = ['Qu\'est-ce que j\'ai demain ?', 'J\'ai 20 min de retard', 'Trouve une pharmacie sur mon trajet',
-    'Organise ma semaine', 'Mon rendez-vous de 15h est annulé', 'Déplace tout mardi à jeudi',
-    'Quand puis-je caser 1h de sport cette semaine ?', 'Réserve un restaurant italien vendredi à 20h', 'Je dois rentrer en urgence'];
+  var AI_SUGGEST = ['Qu\'est-ce que j\'ai demain ?', 'À quelle heure je dois partir ?', 'J\'ai 20 min de retard', 'Il va pleuvoir ?',
+    'Programme ma journée de demain : …', 'Importer une capture d\'écran', 'Trouve une pharmacie sur mon trajet',
+    'Organise ma semaine', 'Mon rendez-vous de 15h est annulé', 'Déplace tout mardi à jeudi', 'Qu\'est-ce que je dois prendre ?',
+    'Mes stats de la semaine', 'Quand puis-je caser 1h de sport cette semaine ?', 'Réserve un restaurant italien vendredi à 20h', 'Je dois rentrer en urgence'];
   var aiThread = [];
   var aiMsgId = 0;
 
@@ -2604,7 +2751,13 @@
       aiThread = state.aiLog.map(function (m) { return { id: ++aiMsgId, role: m.role, text: m.text, old: true, oldStatus: m.status, oldSummary: m.summary }; });
     }
     var chips = $('#aiChips'); chips.innerHTML = '';
-    AI_SUGGEST.forEach(function (s) { chips.appendChild(el('button', { type: 'button', class: 'chip', onclick: function () { aiSubmit(s); } }, s)); });
+    AI_SUGGEST.forEach(function (s) {
+      chips.appendChild(el('button', { type: 'button', class: 'chip', onclick: function () {
+        // une suggestion qui se termine par « … » se complète : on la met dans le champ
+        if (/…$/.test(s)) { var inp = $('#aiInput'); inp.value = s.replace(/…$/, ''); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+        else aiSubmit(s);
+      } }, s));
+    });
     aiRender();
     var dl = $('#ai');
     if (!dl.open) { if (dl.showModal) dl.showModal(); else dl.setAttribute('open', ''); }
@@ -2808,6 +2961,16 @@
     // « Préviens Caro que j'ai 10 min de retard », « dis à Sam que j'arrive », « envoie un message à Maman »
     var tell = text.match(/^\s*(?:pr[ée]viens|pr[ée]venir|dis|dire|[ée]cris|écrire|envoie(?:-lui)?(?:\s+un)?(?:\s+(?:message|sms|texto))?|textote)\s+(?:à\s+|a\s+)?([A-ZÉÈÀa-zéèà][A-Za-zÀ-ÿ-]+)/i);
     if (tell && !NOT_A_NAME.test(cap(tell[1])) && !/^(le|la|les|mon|ma|mes|que|qu|un|une|tout|tous)$/i.test(tell[1])) return aiTellPerson(text, cap(tell[1]));
+    // « Invite Caro », « envoie le rendez-vous à Caro »
+    var inv = text.match(/^\s*(?:invite|inviter|envoie(?:-lui)?\s+(?:le|mon|ce)\s+(?:rdv|rendez-vous|d[ée]jeuner|d[îi]ner|planning)\s+[àa])\s+([A-ZÉÈÀa-zéèà][A-Za-zÀ-ÿ-]+)/i);
+    if (inv && !NOT_A_NAME.test(cap(inv[1]))) return aiInvite(cap(inv[1]));
+    // « Importer une capture d'écran »
+    if (/\b(capture|screenshot|photo d'ecran|scanner)\b/.test(n) && n.length < 60) { $('#shotFile').click(); return aiSay('Choisis la capture d\'écran de ton rendez-vous (Doctolib, SMS, e-mail de confirmation) : je la lis et je l\'ajoute.'); }
+    // Questions rapides
+    if (/\b(meteo|pleuvoir|pleut|pluie|parapluie|il va faire|quel temps|temperature|fera-t-il|fait-il)\b/.test(n)) return aiWeather(n);
+    if (/\b(a quelle heure|quelle heure|quand)\b.*\b(partir|pars|dois partir|je pars|decoller|y aller)\b/.test(n)) return aiLeave();
+    if (/(qu'est-ce que|qu'est ce que|quoi)\b.*\b(prendre|emporter|oublier|amener)\b/.test(n)) return aiPack();
+    if (/\b(temps gagne|j'ai gagne|mes stats|statistiques|mes chiffres|bilan de (la|ma) semaine)\b/.test(n)) return aiStats();
     // « Programme ma journée (de demain) à ma place : voir Caro à midi, être à Châtelet à 15h, récupérer mon colis »
     var prog = text.match(/^\s*(?:est-ce que tu peux |tu peux |peux-tu )?(?:programme|programmer|organise|organiser|planifie|planifier|prepare|préparer|prépare|fais|faire|remplis|remplir|prevois|prévois)(?:-moi| moi)?\s+(?:toute\s+)?(?:ma|la)\s+(?:journ[ée]e|semaine)\b([^:,.\-–]*)[:,.\-–]\s*(.+)$/i);
     if (prog && prog[2] && prog[2].trim().length > 2) {
@@ -3242,7 +3405,11 @@
                   var per = upsertPerson(who, { place: Object.assign({}, pl) });
                   x.person = per.name; save();
                   msg += ' Je retiens que tu vois souvent ' + per.name + ' là-bas : la prochaine fois, ce sera automatique.';
-                  aiSay(msg, per.phone ? null : { status: 'done', summary: 'Numéro proposé.', body: [personPhoneForm(per)] });
+                  var inv = el('div', { class: 'ai-opt' }, el('strong', { text: 'Envoyer le rendez-vous à ' + per.name + ' ?' }), el('small', { text: 'Elle l\'ajoute à son planning en un tap, avec le lieu.' }));
+                  var invSlot = el('div'); inv.appendChild(invSlot);
+                  var fillInv = function () { invSlot.innerHTML = ''; invSlot.appendChild(inviteBox(byId(x.id) || x, x.date, x.start)); };
+                  fillInv();
+                  aiSay(msg, { status: 'done', summary: 'Lieu de ' + per.name + ' retenu.', body: per.phone ? [inv] : [personPhoneForm(per, fillInv), inv] });
                 } else aiSay(msg);
               })));
           });
@@ -3305,6 +3472,77 @@
     aiSay(per.phone ? 'Voici le message pour ' + per.name + ' :' : 'Je n\'ai pas encore le numéro de ' + per.name + '.', { status: 'done', summary: 'Message préparé pour ' + per.name + '.', body: [sendBox] });
   }
 
+  // ---------- Invitations : envoyer un rendez-vous par lien ----------
+  // Le rendez-vous voyage dans le lien lui-même (après le #) : rien ne passe par un serveur.
+  function b64urlEncode(str) { return btoa(unescape(encodeURIComponent(str))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+  function b64urlDecode(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return decodeURIComponent(escape(atob(s))); }
+  function inviteLink(it, d, start) {
+    var pl = placeOf(it);
+    // Pour la personne invitée, « Voir Caro » devient « Voir Ness »
+    var me = state.settings.name || '';
+    var title = it.person && me ? it.title.replace(new RegExp(it.person, 'i'), me) : it.title;
+    var data = { v: 1, t: title, d: d, s: start || it.start || '', du: +it.duration || 60, n: it.notes || '', f: me };
+    if (pl) data.p = { n: pl.name, l: pl.label, a: +(+pl.lat).toFixed(5), o: +(+pl.lon).toFixed(5) };
+    return location.origin + location.pathname + '#invite=' + b64urlEncode(JSON.stringify(data));
+  }
+  function inviteText(it, d, start, toName) {
+    var pl = placeOf(it);
+    return 'Coucou' + (toName ? ' ' + toName : '') + ' ! ' + (it.person && toName && norm(it.person) === norm(toName) ? 'On se voit ' : cap(it.title) + ' : ') +
+      frDate(d, { weekday: 'long', day: 'numeric', month: 'long' }) + (start ? ' à ' + hFr(start) : '') + (pl ? ', ' + pl.name : '') +
+      '. Ajoute-le à ton planning en un tap : ' + inviteLink(it, d, start);
+  }
+  function inviteBox(it, d, start) {
+    var per = it.person ? findPerson(it.person) : null;
+    var wrap = el('div', { class: 'stack' });
+    if (per && per.phone) {
+      wrap.appendChild(el('a', { class: 'btn primary block', href: smsHref(per.phone, inviteText(it, d, start, per.name)) }, 'Envoyer l\'invitation à ' + per.name));
+    }
+    var txt = inviteText(it, d, start, per ? per.name : '');
+    if (navigator.share) wrap.appendChild(aiBtn(per && per.phone ? 'Envoyer à quelqu\'un d\'autre' : 'Envoyer l\'invitation', function () {
+      navigator.share({ title: it.title, text: txt }).catch(function () { /* annulé */ });
+    }, per && per.phone ? 'block' : 'primary block'));
+    wrap.appendChild(aiBtn('Copier le lien d\'invitation', function () {
+      if (navigator.clipboard) navigator.clipboard.writeText(txt).then(function () { toast('Invitation copiée, colle-la dans un message.'); }, function () { toast('Copie impossible sur cet appareil.'); });
+    }, 'block'));
+    wrap.appendChild(el('small', { class: 'hint', text: 'La personne ouvre le lien et ajoute le rendez-vous à son planning, avec le lieu et le trajet.' }));
+    return wrap;
+  }
+  // À l'ouverture : un lien d'invitation reçu
+  var inviteShown = false;
+  function checkInvite() {
+    var m = location.hash.match(/^#invite=([A-Za-z0-9_-]+)/);
+    if (!m) return false;
+    var data;
+    try { data = JSON.parse(b64urlDecode(m[1])); } catch (e) { data = null; }
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+    if (!data || !data.t || !/^\d{4}-\d{2}-\d{2}$/.test(data.d || '')) { toast('Ce lien d\'invitation est incomplet.'); return false; }
+    inviteShown = true;
+    var body = $('#weekDlgBody'); body.innerHTML = '';
+    $('#weekDlgWhen').textContent = data.f ? data.f + ' t\'invite' : 'Invitation';
+    $('#weekDlgTitle').textContent = data.t;
+    var lines = [{ kind: 'keep', text: cap(frDate(data.d, { weekday: 'long', day: 'numeric', month: 'long' })) + (data.s ? ' à ' + data.s : '') + ' · ' + dur(+data.du || 60) }];
+    if (data.p) lines.push({ kind: 'keep', text: data.p.n + (data.p.l && data.p.l !== data.p.n ? ' · ' + data.p.l : '') });
+    if (data.n) lines.push({ kind: 'keep', text: 'Note : ' + data.n });
+    body.appendChild(aiLines(lines));
+    var exists = state.items.some(function (i) { return i.title === data.t && i.date === data.d && (i.start || '') === (data.s || ''); });
+    var finish = function () { $('#weekDlg').close(); };
+    if (exists) body.appendChild(el('p', { class: 'notice', text: 'Ce rendez-vous est déjà dans ton planning.' }));
+    else body.appendChild(aiBtn('Ajouter à mon planning', function () {
+      var item = { id: uid(), title: data.t, fixed: !!data.s, date: data.d, start: data.s || '', deadline: '', after: '', duration: +data.du || 60,
+        priority: 'normale', repeat: 'none', skip: [], doneDates: {}, locationText: '', place: data.p ? { name: data.p.n, label: data.p.l, lat: data.p.a, lon: data.p.o } : null,
+        online: false, source: data.f ? 'invitation de ' + data.f : 'invitation', notes: data.n || '', person: data.f || '' };
+      withUndo('Ajouté à ton planning', function () { state.items.push(item); save(); });
+      if (data.f) upsertPerson(data.f, {});
+      currentDate = data.d; setMode('day'); go('day');
+      finish();
+    }, 'primary block'));
+    body.appendChild(aiBtn('Non merci', finish, 'block'));
+    var dl = $('#weekDlg');
+    if (!dl.open) { if (dl.showModal) dl.showModal(); else dl.setAttribute('open', ''); }
+    return true;
+  }
+  window.addEventListener('hashchange', function () { if (/^#invite=/.test(location.hash)) checkInvite(); });
+
   // ---------- Réglages : Mes proches ----------
   var personEdit = null;
   function renderPeople() {
@@ -3346,6 +3584,194 @@
         }, 'primary')));
   }
   $('#addPersonBtn').addEventListener('click', function () { personEdit = 'new'; renderPeople(); });
+
+  // ---------- Assistant : questions rapides ----------
+  function aiWeather(n) {
+    var d = aiDays(n)[0] || today();
+    if (!state.settings.home) return aiSay('Indique ton domicile dans Réglages pour que je te donne la météo de chez toi.');
+    var day = wxDay(d);
+    if (!day) { loadWeather(true); return aiSay('Je récupère la météo… redemande-moi dans quelques secondes.'); }
+    var rain = rainFrom(d, d === today() ? nowMin() : 0);
+    var txt = cap(aiDayName(d)) + ' : ' + wxSummary(d) + '.';
+    if (!rain && rainyDay(d)) txt += ' Un parapluie dans le sac, par précaution.';
+    if (rain) {
+      txt += ' Prends un parapluie' + (state.settings.mode === 'bicycling' ? ', et privilégie les transports plutôt que le vélo.' : '.');
+      var outdoor = planDay(d).out.filter(function (o) { return !o.past && !o.item.done && !isFixed(o.item) && o.travel && o.start >= rain.at - 30; });
+      if (outdoor.length) txt += ' Si tu peux, fais ' + outdoor.map(function (o) { return o.item.title.toLowerCase(); }).join(', ') + ' avant ' + fmt(rain.at) + '.';
+    }
+    aiSay(txt);
+  }
+  function aiLeave() {
+    var t = today(), n = nowMin();
+    var next = planDay(t).out.filter(function (o) { return !o.past && !o.ongoing && !o.item.done && o.end > n; })[0];
+    if (!next) return aiSay('Plus rien de prévu aujourd\'hui : tu n\'as nulle part où aller !');
+    if (!next.travel) return aiSay('Ta prochaine étape, ' + next.item.title + ' à ' + fmt(next.start) + ', se fait sans déplacement.');
+    var leave = next.leaveAt || (next.start - next.travel);
+    var left = leave - n;
+    aiSay((left <= 0 ? 'Tu devrais déjà être parti' + (left < -5 ? ' (depuis ' + dur(-left) + ')' : '') + ' !' : 'Pars à ' + fmt(leave) + ', dans ' + dur(left) + '.') +
+      ' Direction ' + next.item.title + ' à ' + fmt(next.start) + (placeOf(next.item) ? ' (' + next.item.place.name + ')' : '') + ', ≈ ' + dur(next.travel) + ' de trajet.',
+      placeOf(next.item) ? { status: 'done', summary: 'Heure de départ donnée.', body: [el('a', { class: 'btn primary block', href: mapsLink(next.item), target: '_blank', rel: 'noopener' }, 'Y aller')] } : null);
+  }
+  function aiPack() {
+    var t = today(), n = nowMin();
+    var steps = planDay(t).out.filter(function (o) { return !o.past && !o.item.done && o.end > n; });
+    var lines = [];
+    steps.forEach(function (o) {
+      var src = byId(o.item.id); if (!src) return;
+      var list = packList(src).filter(function (x) { return !packChecked(src, t)[x]; });
+      if (o.travel && isWet(wxAt(t, o.leaveAt || o.start - o.travel))) list = list.concat(['Parapluie']);
+      if (list.length) lines.push({ kind: 'keep', text: o.item.title + ' : ' + list.join(', ') });
+    });
+    if (!lines.length) return aiSay('Rien de spécial à prendre pour la suite de ta journée.');
+    aiSay('Pour aujourd\'hui, pense à prendre :', { status: 'done', summary: 'Liste « à prendre ».', lines: lines });
+  }
+  function aiStats() {
+    var st = weekStats(weekStart(today())), sk = streakDays();
+    if (!st.total) return aiSay('Rien de prévu cette semaine pour l\'instant, donc pas encore de chiffres !');
+    aiSay('Cette semaine : ' + st.done + ' étape(s) faite(s) sur ' + st.total + ', ≈ ' + dur(st.travel || 0) + ' de trajets' +
+      (st.gained ? ', et environ ' + dur(st.gained) + ' gagnées grâce à l\'ordre optimisé' : '') + '.' + (sk >= 2 ? ' Et ' + sk + ' jours bouclés d\'affilée, bravo !' : ''));
+  }
+  function aiInvite(name) {
+    var per = findPerson(name);
+    var cands = [];
+    daysBetween(today(), addDays(today(), 30)).forEach(function (d) {
+      occurrences(d).forEach(function (o) {
+        if (o.done) return;
+        if ((o.person && norm(o.person) === norm(name)) || norm(o.title).indexOf(norm(name)) >= 0) cands.push({ o: o, d: d });
+      });
+    });
+    if (!cands.length) return aiSay('Je ne trouve pas de rendez-vous avec ' + name + ' dans les 30 prochains jours. Ajoute-le d\'abord, par exemple « voir ' + name + ' vendredi à 12h ».');
+    var c = cands[0];
+    if (!per) upsertPerson(name, {});
+    aiSay('Voici l\'invitation pour « ' + c.o.title + ' » (' + aiDayName(c.d) + (c.o.start ? ' à ' + c.o.start : '') + ') :', { status: 'done', summary: 'Invitation préparée.', body: [inviteBox(Object.assign({}, c.o, { person: name }), c.d, c.o.start)] });
+  }
+
+  // ---------- Importer une capture d'écran (Doctolib, SMS, e-mail de confirmation) ----------
+  // La lecture se fait sur le téléphone (Tesseract) : l'image n'est envoyée nulle part.
+  var TESS_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+  function loadTesseract() {
+    if (window.Tesseract) return Promise.resolve(window.Tesseract);
+    return new Promise(function (res, rej) {
+      var s = document.createElement('script'); s.src = TESS_URL; s.async = true;
+      s.onload = function () { window.Tesseract ? res(window.Tesseract) : rej(new Error('tesseract')); };
+      s.onerror = rej; document.head.appendChild(s);
+    });
+  }
+  function ocrImage(file, onProgress) {
+    return loadTesseract().then(function (T) {
+      return T.recognize(file, 'fra', { logger: function (m) { if (m.status === 'recognizing text' && onProgress) onProgress(Math.round(m.progress * 100)); } });
+    }).then(function (r) { return (r && r.data && r.data.text) || ''; });
+  }
+  var MONTHS_FR = ['janvier', 'fevrier', 'mars', 'avril', 'mai', 'juin', 'juillet', 'aout', 'septembre', 'octobre', 'novembre', 'decembre'];
+  var SPECIALTIES = ['chirurgien-dentiste', 'orthodontiste', 'dentiste', 'medecin generaliste', 'generaliste', 'kinesitherapeute', 'masseur-kinesitherapeute', 'kine', 'osteopathe', 'ophtalmologue', 'orthoptiste',
+    'dermatologue', 'gynecologue', 'sage-femme', 'pediatre', 'cardiologue', 'orl', 'psychologue', 'psychiatre', 'radiologie', 'radiologue', 'laboratoire', 'podologue', 'pedicure', 'dieteticien', 'infirmier', 'veterinaire', 'coiffeur', 'coiffure', 'barbier', 'esthetique', 'garage', 'controle technique'];
+  function guessYear(mo, day) {
+    var now = new Date(), y = now.getFullYear();
+    var cand = new Date(y, mo - 1, day);
+    if (cand < new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30)) y++;
+    return y;
+  }
+  function parseAppointmentText(raw) {
+    var txt = (raw || '').replace(/\r/g, '');
+    var lines = txt.split('\n').map(function (s) { return s.replace(/\s+/g, ' ').trim(); }).filter(Boolean);
+    var n = norm(txt).replace(/’/g, "'");
+    var r = { title: '', date: '', start: '', address: '', phone: '', source: /doctolib/i.test(txt) ? 'Doctolib' : '', who: '', spec: '' };
+    // Date : « lundi 24 novembre 2026 », « 24 nov. », « 24/11/2026 »
+    var m = n.match(/\b(\d{1,2})(?:er)?\s+(janv(?:ier)?|fevr?(?:ier)?|mars|avr(?:il)?|mai|juin|juil(?:let)?|aout|sept?(?:embre)?|oct(?:obre)?|nov(?:embre)?|dec(?:embre)?)\.?(?:\s+(\d{4}))?/);
+    if (m) {
+      var mo = MONTHS_FR.findIndex(function (x) { return x.indexOf(m[2].slice(0, 3)) === 0; }) + 1;
+      if (mo > 0) r.date = (m[3] || guessYear(mo, +m[1])) + '-' + pad(mo) + '-' + pad(+m[1]);
+    }
+    if (!r.date) {
+      m = n.match(/\b(\d{1,2})[\/.](\d{1,2})(?:[\/.](\d{2,4}))?\b/);
+      if (m && +m[2] >= 1 && +m[2] <= 12 && +m[1] >= 1 && +m[1] <= 31) {
+        var yy = m[3] ? (m[3].length === 2 ? '20' + m[3] : m[3]) : guessYear(+m[2], +m[1]);
+        r.date = yy + '-' + pad(+m[2]) + '-' + pad(+m[1]);
+      }
+    }
+    if (!r.date && /\bdemain\b/.test(n)) r.date = addDays(today(), 1);
+    if (!r.date && /aujourd'hui/.test(n)) r.date = today();
+    // Heure : « à 09:30 », « 9h30 », « 14 h 15 »
+    m = n.match(/\b(?:a|à)\s*(\d{1,2})\s*[h:]\s*(\d{2})?\b/) || n.match(/\b(\d{1,2})\s*[h:]\s*(\d{2})\b/) || n.match(/\b(\d{1,2})\s*h\b/);
+    if (m && +m[1] < 24) r.start = pad(+m[1]) + ':' + (m[2] || '00');
+    // Téléphone
+    m = txt.match(/(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}/); if (m) r.phone = m[0];
+    // Adresse : la ligne avec un code postal (et la ligne de rue juste avant)
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      if (/\b\d{5}\b/.test(L) && !/(?:\+33|0)[1-9](?:[\s.-]?\d{2}){4}/.test(L)) {
+        var prev = lines[i - 1] || '';
+        r.address = (/^\d+\s*(bis|ter)?\s*,?\s*\w/i.test(L) || !/\d+[\s,]+(rue|av|avenue|bd|boulevard|place|chemin|allee|allée|quai|cours|impasse|route)/i.test(prev) ? '' : prev + ', ') + L;
+        if (!/\d+[\s,]+(rue|av|avenue|bd|boulevard|place|chemin|allée|allee|quai|cours|impasse|route)/i.test(r.address) && /\d+[\s,]+(rue|av|avenue|bd|boulevard|place|chemin|allée|allee|quai|cours|impasse|route)/i.test(prev)) r.address = prev + ', ' + L;
+        break;
+      }
+    }
+    // Praticien et spécialité
+    m = txt.match(/\b(?:Dr\.?|Docteur|Pr\.?|Professeur|Ma[iî]tre|Me)\s+([A-ZÉÈ][A-Za-zÀ-ÿ'-]+(?:\s+[A-ZÉÈ][A-Za-zÀ-ÿ'-]+)?)/);
+    if (m) r.who = m[0].replace(/\s+/g, ' ').trim();
+    var spec = SPECIALTIES.filter(function (s) { return n.indexOf(s) >= 0; })[0];
+    if (spec) r.spec = cap(spec.replace('medecin generaliste', 'médecin généraliste').replace('generaliste', 'médecin généraliste').replace('kinesitherapeute', 'kinésithérapeute').replace('masseur-kinésithérapeute', 'kinésithérapeute').replace('osteopathe', 'ostéopathe').replace('pediatre', 'pédiatre').replace('gynecologue', 'gynécologue').replace('veterinaire', 'vétérinaire').replace('esthetique', 'esthéticienne'));
+    r.title = r.spec && r.who ? r.spec + ' · ' + r.who : (r.who || r.spec || '');
+    if (!r.title) {
+      var first = lines.filter(function (l) { return l.length > 3 && !/\d{2}[:h]\d{2}|\b\d{5}\b|rendez-vous confirm/i.test(l); })[0];
+      r.title = first ? first.slice(0, 50) : 'Rendez-vous';
+    }
+    return r;
+  }
+  function aiScreenshot(file) {
+    if (!file) return;
+    aiOpen();
+    aiThread.push({ id: ++aiMsgId, role: 'user', text: 'Capture d\'écran : ' + (file.name || 'image') });
+    var prog = el('p', { class: 'hint', text: 'Préparation de la lecture… (la première fois, l\'outil se télécharge : quelques secondes)' });
+    aiSay('Je lis ta capture. Elle reste sur ton téléphone : rien n\'est envoyé.', { status: 'done', summary: 'Lecture d\'une capture.', body: [prog] });
+    ocrImage(file, function (p) { prog.textContent = 'Lecture en cours : ' + p + ' %'; }).then(function (text) {
+      prog.textContent = 'Lecture terminée.';
+      if (!text.trim()) return aiSay('Je n\'ai trouvé aucun texte sur cette image. Essaie avec une capture plus nette.');
+      aiShotResult(parseAppointmentText(text), text);
+    }).catch(function () {
+      prog.textContent = 'Lecture impossible.';
+      aiSay('Je n\'ai pas réussi à lire cette capture (pas de connexion pour télécharger l\'outil de lecture ?). Réessaie, ou ajoute le rendez-vous avec l\'ajout rapide.');
+    });
+  }
+  function aiShotResult(r, rawText) {
+    var fTitle = el('input', { value: r.title, 'aria-label': 'Titre' });
+    var fDate = el('input', { type: 'date', value: r.date, 'aria-label': 'Date' });
+    var fTime = el('input', { type: 'time', value: r.start, 'aria-label': 'Heure' });
+    var fAddr = el('input', { value: r.address, placeholder: 'Adresse (à compléter si besoin)', 'aria-label': 'Adresse' });
+    var fPhone = el('input', { type: 'tel', value: r.phone, placeholder: 'Téléphone (facultatif)', 'aria-label': 'Téléphone' });
+    var missing = [!r.date && 'la date', !r.start && 'l\'heure', !r.address && 'l\'adresse'].filter(Boolean);
+    var form = el('div', { class: 'stack shot-form' },
+      el('label', { text: 'Rendez-vous' }), fTitle,
+      el('div', { class: 'grid2' }, el('div', null, el('label', { text: 'Date' }), fDate), el('div', null, el('label', { text: 'Heure' }), fTime)),
+      el('label', { text: 'Adresse' }), fAddr,
+      el('label', { text: 'Téléphone' }), fPhone,
+      aiBtn('Ajouter à mon planning', function (e) {
+        if (!fDate.value || !fTime.value) { toast('Indique la date et l\'heure.'); (fDate.value ? fTime : fDate).focus(); return; }
+        var item = { id: uid(), title: fTitle.value.trim() || 'Rendez-vous', fixed: true, date: fDate.value, start: fTime.value, deadline: '', after: '',
+          duration: /dentiste|kine|osteo|coiff/i.test(norm(fTitle.value)) ? 45 : 30, priority: 'normale', repeat: 'none', skip: [], doneDates: {},
+          locationText: fAddr.value.trim(), place: null, online: false, source: r.source || 'capture', phone: fPhone.value.trim(), notes: '' };
+        withUndo('Rendez-vous ajouté', function () { state.items.push(item); save(); render(); });
+        e.currentTarget.disabled = true;
+        var after = function () {
+          var it = byId(item.id);
+          var o = it ? planDay(it.date).out.filter(function (x) { return x.item.id === it.id; })[0] : null;
+          aiSay('C\'est ajouté : ' + item.title + ', ' + aiDayName(item.date) + ' à ' + item.start + (it && it.place ? ', ' + it.place.label : '') + '.' +
+            (o && o.travel ? ' Départ conseillé à ' + fmt(o.leaveAt || o.start - o.travel) + '.' : '') +
+            (r.source === 'Doctolib' ? ' Pour l\'annuler ou le déplacer, passe toujours par Doctolib.' : ''),
+            { status: 'done', summary: 'Rendez-vous importé.', body: [aiBtn('Voir la journée', function () { $('#ai').close(); currentDate = item.date; go('day'); setMode('day'); }, 'block')] });
+        };
+        if (item.locationText) findAddress(item.id).then(after); else after();
+      }, 'primary block'),
+      el('details', { class: 'more' }, el('summary', null, 'Texte lu'), el('pre', { class: 'ocr-raw', text: rawText.slice(0, 1500) })));
+    aiSay(missing.length ? 'Voici ce que j\'ai lu. Il me manque ' + missing.join(', ') + ' : complète avant d\'ajouter.' : 'Voici ce que j\'ai lu. Vérifie, puis ajoute :', { status: 'done', summary: 'Capture lue.', body: [form] });
+  }
+
+  $('#aiShot').addEventListener('click', function () { $('#shotFile').click(); });
+  $('#shotFile').addEventListener('change', function () {
+    var f = this.files && this.files[0];
+    this.value = '';
+    if (f) aiScreenshot(f);
+  });
 
   // ================= Premier lancement guidé =================
   var onb = { step: 0, home: null, work: null, workKind: 'Travail', addHours: true, wStart: '09:00', wEnd: '18:00', mode: 'transit' };
@@ -3608,8 +4034,11 @@
   function wxSummary(date) {
     var d = wxDay(date); if (!d) return '';
     var rain = rainFrom(date, date === today() ? nowMin() : 0);
-    return wxLabel(d.c) + ', ' + d.min + '° → ' + d.max + '°' + (rain ? ' · pluie probable vers ' + fmt(rain.at) + ' (' + rain.w.p + ' %)' : (d.p < 30 ? ' · pas de pluie prévue' : ''));
+    var rainyDay = d.c >= 51 || d.p >= 40;
+    return wxLabel(d.c) + ', ' + d.min + '° → ' + d.max + '°' +
+      (rain ? ' · pluie probable vers ' + fmt(rain.at) + ' (' + rain.w.p + ' %)' : (rainyDay ? ' · averses possibles dans la journée' : ' · pas de pluie prévue'));
   }
+  function rainyDay(date) { var d = wxDay(date); return !!d && (d.c >= 51 || d.p >= 40); }
 
   // ================= Briefing du matin, bilan du soir, tâches en retard =================
   function renderBrief(plan) {
@@ -3661,6 +4090,8 @@
         box.appendChild(el('div', { class: 'brief ' + (all ? 'okb' : '') },
           el('p', { class: 'brief-k', text: 'Bilan du jour' }),
           el('strong', { text: all ? 'Bravo, ta journée est bouclée ! (' + done + ' étape' + (done > 1 ? 's' : '') + ' faite' + (done > 1 ? 's' : '') + ')' : done + ' sur ' + occ.length + ' faites. Reste : ' + left.map(function (i) { return i.title; }).join(', ') }),
+          dayGain(t) >= 5 ? el('p', { class: 'brief-w', text: 'L\'ordre optimisé t\'a fait gagner ≈ ' + dur(dayGain(t)) + ' de trajet aujourd\'hui.' }) : null,
+          streakDays() >= 2 ? el('p', { class: 'brief-w', text: 'Série : ' + streakDays() + ' jours bouclés d\'affilée.' }) : null,
           wxDay(addDays(t, 1)) ? el('p', { class: 'brief-w', text: 'Demain : ' + wxSummary(addDays(t, 1)) }) : null,
           el('div', { class: 'btns' },
             all ? null : aiBtn('Tout mettre à demain', function () {
@@ -3677,7 +4108,15 @@
   if (!state.settings.onboarded && state.settings.home) { state.settings.onboarded = true; save(); } // utilisateurs déjà installés
   resetForm();
   render();
-  if (!state.settings.onboarded) setTimeout(openOnboarding, 400);
+  applyAccent();
+  // Invitation reçue par lien : on l'affiche d'abord ; un nouvel utilisateur voit ensuite la présentation
+  var hadInvite = checkInvite();
+  if (!state.settings.onboarded) {
+    if (hadInvite) {
+      var afterInvite = function () { $('#weekDlg').removeEventListener('close', afterInvite); setTimeout(openOnboarding, 250); };
+      $('#weekDlg').addEventListener('close', afterInvite);
+    } else setTimeout(openOnboarding, 400);
+  }
   loadWeather();
   setInterval(function () { loadWeather(); }, 30 * 60 * 1000);
   setInterval(function () {
